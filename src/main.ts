@@ -62,12 +62,17 @@ let lastFrameTime = performance.now();
 let countdownTargetPerfTime = 0;
 let lastScoreSyncTime = 0;
 
+function clearModalOutcomeClasses(): void {
+  modalScreen.classList.remove('winner-modal', 'loser-modal', 'draw-modal');
+}
+
 // Setup Multiplayer Client & Callbacks
 const multiplayer = new MultiplayerClient({
   onSearching: () => {
     game.state = 'SEARCHING';
     game.resetArena();
     countdownBanner.style.display = 'none';
+    clearModalOutcomeClasses();
 
     modalBadge.textContent = 'LIVE ARENA QUEUE';
     modalTitle.textContent = 'SEARCHING FOR KNIGHT...';
@@ -81,14 +86,15 @@ const multiplayer = new MultiplayerClient({
     modalScreen.style.display = 'block';
   },
 
-  onMatchFound: (_role: PlayerRole, matchStartTime: number) => {
-    beginMultiplayerCountdown(matchStartTime);
+  onMatchFound: (_role: PlayerRole, countdownMs: number) => {
+    beginMultiplayerCountdown(countdownMs);
   },
 
   onPeerLeft: () => {
     game.state = 'SEARCHING';
     game.resetArena();
     countdownBanner.style.display = 'none';
+    clearModalOutcomeClasses();
 
     modalBadge.textContent = 'OPPONENT DISCONNECTED';
     modalTitle.textContent = 'KNIGHT LEFT THE ARENA';
@@ -103,7 +109,11 @@ const multiplayer = new MultiplayerClient({
   },
 
   onSpawnTarget: target => {
-    if (game.mode === 'MULTIPLAYER' && game.state === 'PLAYING') {
+    if (game.mode === 'MULTIPLAYER' && (game.state === 'PLAYING' || game.state === 'COUNTDOWN')) {
+      if (game.state === 'COUNTDOWN') {
+        countdownBanner.style.display = 'none';
+        game.start();
+      }
       game.addRemoteTarget(target);
     }
   },
@@ -118,19 +128,31 @@ const multiplayer = new MultiplayerClient({
       () => {
         updateHUD();
         checkMultiplayerKnockout();
-      }
+      },
+      payload.isBomb,
+      payload.points,
+      payload.slicerScore,
+      payload.slicerLives
     );
   },
 
   onScoreSync: (payload: ScoreSyncPayload) => {
-    if (game.mode !== 'MULTIPLAYER' || game.state !== 'PLAYING') return;
+    if (game.mode !== 'MULTIPLAYER' || (game.state !== 'PLAYING' && game.state !== 'COUNTDOWN')) return;
     if (multiplayer.role === 'guest') {
+      if (game.state === 'COUNTDOWN') {
+        countdownBanner.style.display = 'none';
+        game.start();
+      }
       game.score = payload.guestScore;
       game.lives = payload.guestLives;
       game.opponentScore = payload.hostScore;
       game.opponentLives = payload.hostLives;
       game.matchTimeRemaining = payload.timeRemainingMs / 1000;
+      if (payload.targets) {
+        game.syncRemoteTargets(payload.targets);
+      }
       updateHUD();
+      checkMultiplayerKnockout();
     }
   },
 
@@ -151,9 +173,9 @@ const multiplayer = new MultiplayerClient({
     showMultiplayerGameOver(payload.winner, payload.reason);
   },
 
-  onRematchStart: (matchStartTime: number) => {
+  onRematchStart: (countdownMs: number) => {
     if (game.mode !== 'MULTIPLAYER') return;
-    beginMultiplayerCountdown(matchStartTime);
+    beginMultiplayerCountdown(countdownMs);
   }
 });
 
@@ -171,7 +193,11 @@ game.onTargetSlicedByLocal = (target, cutAngle, nearestX, nearestY) => {
       cutAngle,
       nearestX,
       nearestY,
-      slicerRole: multiplayer.role
+      slicerRole: multiplayer.role,
+      isBomb: target.isBomb,
+      points: target.points,
+      slicerScore: game.score,
+      slicerLives: game.lives
     });
     checkMultiplayerKnockout();
   }
@@ -186,8 +212,11 @@ async function bootstrapCamera(): Promise<void> {
   await new Promise(res => (video.onloadedmetadata = res));
 }
 
-function beginMultiplayerCountdown(matchStartEpochMs: number): void {
-  const delayMs = Math.max(800, matchStartEpochMs - Date.now());
+function beginMultiplayerCountdown(countdownOrEpochMs: number): void {
+  const delayMs =
+    countdownOrEpochMs <= 15000
+      ? Math.max(800, countdownOrEpochMs)
+      : Math.max(800, countdownOrEpochMs - Date.now());
   countdownTargetPerfTime = performance.now() + delayMs;
   game.state = 'COUNTDOWN';
   game.score = 0;
@@ -196,6 +225,7 @@ function beginMultiplayerCountdown(matchStartEpochMs: number): void {
   game.opponentLives = 3;
   game.matchTimeRemaining = game.matchDurationSec;
   game.resetArena();
+  clearModalOutcomeClasses();
   updateHUD();
 
   modalScreen.style.display = 'none';
@@ -246,6 +276,7 @@ function updateHUD(): void {
     }
   } else if (game.lives <= 0 && game.state === 'PLAYING') {
     game.state = 'GAMEOVER';
+    clearModalOutcomeClasses();
     modalBadge.textContent = game.isNewHighScore && game.score > 0 ? '🏆 NEW HIGH SCORE!' : 'SOLO MATCH COMPLETE';
     modalTitle.textContent = 'VALIANT DEFEAT';
     modalDesc.textContent =
@@ -302,13 +333,18 @@ function handleMultiplayerTimeUp(): void {
   const guestScore = multiplayer.role === 'guest' ? game.score : game.opponentScore;
   const guestLives = multiplayer.role === 'guest' ? game.lives : game.opponentLives;
 
+  // When time runs out and both players still have lives left, winner is determined strictly by points; equal points = DRAW
   let winner: PlayerRole | 'draw' = 'draw';
-  if (hostScore > guestScore) {
+  if (hostLives <= 0 && guestLives > 0) {
+    winner = 'guest';
+  } else if (guestLives <= 0 && hostLives > 0) {
+    winner = 'host';
+  } else if (hostScore > guestScore) {
     winner = 'host';
   } else if (guestScore > hostScore) {
     winner = 'guest';
-  } else if (hostLives !== guestLives) {
-    winner = hostLives > guestLives ? 'host' : 'guest';
+  } else {
+    winner = 'draw';
   }
 
   const payload: MatchOverPayload = {
@@ -320,9 +356,7 @@ function handleMultiplayerTimeUp(): void {
     guestLives
   };
 
-  if (multiplayer.role === 'host') {
-    multiplayer.sendMatchOver(payload);
-  }
+  multiplayer.sendMatchOver(payload);
   showMultiplayerGameOver(winner, 'timeout');
 }
 
@@ -330,27 +364,39 @@ function showMultiplayerGameOver(winner: PlayerRole | 'draw', reason: 'timeout' 
   if (game.state === 'GAMEOVER') return;
   game.state = 'GAMEOVER';
   countdownBanner.style.display = 'none';
+  clearModalOutcomeClasses();
 
   const didWin = winner !== 'draw' && winner === multiplayer.role;
   const isDraw = winner === 'draw';
 
-  modalBadge.textContent = reason === 'knockout' ? 'KNOCKOUT • LAST KNIGHT STANDING' : 'TIME UP • FINAL SCORE';
   if (isDraw) {
-    modalTitle.textContent = 'HONORABLE DRAW!';
+    modalScreen.classList.add('draw-modal');
+    modalBadge.textContent = '🤝 TIME UP • EQUAL POINTS';
+    modalTitle.textContent = 'DRAW!';
   } else if (didWin) {
-    modalTitle.textContent = 'GLORIOUS VICTORY!';
+    modalScreen.classList.add('winner-modal');
+    modalBadge.textContent =
+      reason === 'knockout' ? '🏆 KNOCKOUT • OPPONENT LOST ALL LIVES' : '🏆 TIME UP • FINAL RESULT';
+    modalTitle.textContent = 'WINNER!';
   } else {
-    modalTitle.textContent = 'VALIANT DEFEAT';
+    modalScreen.classList.add('loser-modal');
+    modalBadge.textContent =
+      reason === 'knockout' ? '💀 KNOCKOUT • YOU LOST ALL LIVES' : '💀 TIME UP • FINAL RESULT';
+    modalTitle.textContent = 'LOSER';
   }
 
   const reasonText =
     reason === 'knockout'
-      ? game.lives <= 0
-        ? 'You lost all 3 hearts to poison mushrooms!'
-        : 'Your opponent lost all 3 hearts!'
-      : '60-second arena battle complete!';
+      ? didWin
+        ? 'Your opponent lost all 3 hearts to poison mushrooms! You win the match!'
+        : 'You lost all 3 hearts to poison mushrooms! Match over!'
+      : isDraw
+        ? 'Both knights survived until time ran out with the exact same score!'
+        : didWin
+          ? 'Time is up and you finished with the higher score!'
+          : 'Time is up and your rival finished with the higher score!';
 
-  modalDesc.textContent = `${reasonText} YOU: ${game.score} pts (${game.lives} ❤️) vs RIVAL: ${game.opponentScore} pts (${game.opponentLives} ❤️). Raise both hands or click REMATCH!`;
+  modalDesc.textContent = `${reasonText}  |  YOU: ${game.score} PTS (${game.lives} ❤️)  vs  RIVAL: ${game.opponentScore} PTS (${game.opponentLives} ❤️). Raise both hands or click REMATCH!`;
 
   menuOptions.style.display = 'none';
   modalActions.style.display = 'flex';
@@ -370,6 +416,7 @@ function showMainMenu(): void {
   game.lives = 3;
   game.isNewHighScore = false;
   game.resetArena();
+  clearModalOutcomeClasses();
   updateHUD();
 
   spModeSub.textContent = `Solo Arcade • 3 Lives • Best: ${game.highScore}`;
@@ -396,6 +443,7 @@ function enterSingleplayer(): void {
   game.lives = 3;
   game.isNewHighScore = false;
   game.resetArena();
+  clearModalOutcomeClasses();
   updateHUD();
 
   opponentHud.style.display = 'none';
@@ -677,15 +725,17 @@ function loop(now: number): void {
       renderer.renderSword(rs.x, rs.y, rs.angle, 'remote');
     }
 
-    // Periodic score/timer heartbeat from host
-    if (multiplayer.role === 'host' && game.state === 'PLAYING' && now - lastScoreSyncTime > 500) {
+    // Periodic score/timer/target heartbeat from host
+    if (multiplayer.role === 'host' && game.state === 'PLAYING' && now - lastScoreSyncTime > 300) {
       lastScoreSyncTime = now;
+      const activeTargets = game.targets.filter(t => !t.sliced);
       multiplayer.sendScoreSync({
         hostScore: game.score,
         hostLives: game.lives,
         guestScore: game.opponentScore,
         guestLives: game.opponentLives,
-        timeRemainingMs: Math.round(game.matchTimeRemaining * 1000)
+        timeRemainingMs: Math.round(game.matchTimeRemaining * 1000),
+        targets: activeTargets
       });
     }
   }
@@ -699,10 +749,14 @@ function loop(now: number): void {
   }
 
   // 8. Game Physics, 3D Targets, Floating Score Popups & Particle Rendering
+  const prevDisplayedSec = Math.ceil(game.matchTimeRemaining);
   const canSpawn = game.mode === 'SINGLEPLAYER' || multiplayer.role === 'host';
   game.update(now, dt, canvas.width, canvas.height, canSpawn, updateHUD, handleMultiplayerTimeUp);
-  if (game.state === 'PLAYING') {
-    updateHUD();
+  if (game.mode === 'MULTIPLAYER' && game.state === 'PLAYING') {
+    const newDisplayedSec = Math.ceil(game.matchTimeRemaining);
+    if (newDisplayedSec !== prevDisplayedSec) {
+      updateHUD();
+    }
   }
 
   for (const item of game.targets) {

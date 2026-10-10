@@ -23,6 +23,10 @@ export interface SliceEventPayload {
   nearestX: number;
   nearestY: number;
   slicerRole: PlayerRole;
+  isBomb?: boolean;
+  points?: number;
+  slicerScore?: number;
+  slicerLives?: number;
   hostScore?: number;
   hostLives?: number;
   guestScore?: number;
@@ -35,6 +39,7 @@ export interface ScoreSyncPayload {
   guestScore: number;
   guestLives: number;
   timeRemainingMs: number;
+  targets?: Target[];
 }
 
 export interface MatchOverPayload {
@@ -317,6 +322,8 @@ export class MultiplayerClient {
 
   private pc: RTCPeerConnection | null = null;
   private fastChannel: RTCDataChannel | null = null;
+  private reliableChannel: RTCDataChannel | null = null;
+  private offerRetryTimer: number | null = null;
   private remoteDescSet = false;
   private pendingCandidates: RTCIceCandidateInit[] = [];
 
@@ -381,14 +388,18 @@ export class MultiplayerClient {
     }
   }
 
-  private publishToTopic(topic: string, data: Record<string, unknown>): void {
-    const envelope = {
-      ...data,
-      _sid: this.clientId,
-      _mid: randomId('m_')
-    };
-    const serialized = JSON.stringify(envelope);
+  private markMessageSeen(msgId: string): boolean {
+    if (this.seenMsgIds.has(msgId)) return false;
+    this.seenMsgIds.add(msgId);
+    this.seenMsgQueue.push(msgId);
+    if (this.seenMsgQueue.length > 600) {
+      const oldest = this.seenMsgQueue.shift();
+      if (oldest) this.seenMsgIds.delete(oldest);
+    }
+    return true;
+  }
 
+  private publishRawToTopic(topic: string, serialized: string): void {
     this.mqtt.publish(topic, serialized);
 
     if (this.localWs && this.localWs.readyState === WebSocket.OPEN) {
@@ -404,9 +415,47 @@ export class MultiplayerClient {
     }
   }
 
-  private publishToRoom(data: Record<string, unknown>): void {
-    if (!this.currentRoomId) return;
-    this.publishToTopic(`${TOPIC_PREFIX}/room/${this.currentRoomId}`, data);
+  private publishToTopic(topic: string, data: Record<string, unknown>, customMid?: string): void {
+    const envelope = {
+      ...data,
+      _sid: this.clientId,
+      _mid: customMid || randomId('m_')
+    };
+    const serialized = JSON.stringify(envelope);
+    this.publishRawToTopic(topic, serialized);
+  }
+
+  private publishToRoom(data: Record<string, unknown>, customMid?: string): void {
+    if (!this.currentRoomId && !this.partnerId) return;
+    const mid = customMid || randomId('m_');
+    const envelope = {
+      ...data,
+      _sid: this.clientId,
+      _mid: mid
+    };
+    const serialized = JSON.stringify(envelope);
+
+    // Send directly to partner's already-subscribed personal inbox so zero packets are lost to room subscribe latency
+    if (this.partnerId) {
+      this.publishRawToTopic(`${TOPIC_PREFIX}/inbox/${this.partnerId}`, serialized);
+    } else if (this.currentRoomId) {
+      this.publishRawToTopic(`${TOPIC_PREFIX}/room/${this.currentRoomId}`, serialized);
+    }
+  }
+
+  private sendReliableEvent(data: Record<string, unknown>): void {
+    const mid = randomId('m_');
+    const envelope = {
+      ...data,
+      _sid: this.clientId,
+      _mid: mid
+    };
+    if (this.reliableChannel && this.reliableChannel.readyState === 'open') {
+      try {
+        this.reliableChannel.send(JSON.stringify(envelope));
+      } catch {}
+    }
+    this.publishToRoom(data, mid);
   }
 
   private onTransportPayload(topic: string, rawPayload: string): void {
@@ -422,14 +471,8 @@ export class MultiplayerClient {
 
     if (!senderId || senderId === this.clientId) return;
 
-    if (msgId) {
-      if (this.seenMsgIds.has(msgId)) return;
-      this.seenMsgIds.add(msgId);
-      this.seenMsgQueue.push(msgId);
-      if (this.seenMsgQueue.length > 600) {
-        const oldest = this.seenMsgQueue.shift();
-        if (oldest) this.seenMsgIds.delete(oldest);
-      }
+    if (msgId && !this.markMessageSeen(msgId)) {
+      return;
     }
 
     const isInbox = topic === `${TOPIC_PREFIX}/inbox/${this.clientId}`;
@@ -475,10 +518,12 @@ export class MultiplayerClient {
   }
 
   private notifyLeaveIfInRoom(): void {
-    if (this.inRoom && this.currentRoomId) {
+    if (this.inRoom && (this.currentRoomId || this.partnerId)) {
       this.publishToRoom({ type: 'peer_left' });
       this.lastPartnerId = this.partnerId;
-      this.mqtt.unsubscribe(`${TOPIC_PREFIX}/room/${this.currentRoomId}`);
+      if (this.currentRoomId) {
+        this.mqtt.unsubscribe(`${TOPIC_PREFIX}/room/${this.currentRoomId}`);
+      }
     }
   }
 
@@ -529,15 +574,15 @@ export class MultiplayerClient {
         const hostId = msg.hostId as string;
         if (!roomId || !hostId) return;
 
-        const matchStartTime = Date.now() + 3200;
-        this.enterMatchedRoom(roomId, 'guest', hostId, matchStartTime);
+        const countdownMs = 3000;
+        this.enterMatchedRoom(roomId, 'guest', hostId, countdownMs);
 
         this.publishToTopic(`${TOPIC_PREFIX}/inbox/${hostId}`, {
           type: 'match_confirm',
           roomId,
           hostId,
           guestId: this.clientId,
-          matchStartTime
+          countdownMs
         });
         break;
       }
@@ -546,10 +591,10 @@ export class MultiplayerClient {
         if (!this.isSearching || this.inRoom) return;
         const roomId = msg.roomId as string;
         const guestId = msg.guestId as string;
-        const matchStartTime = (msg.matchStartTime as number) || Date.now() + 3200;
+        const countdownMs = (msg.countdownMs as number) || 3000;
         if (!roomId || !guestId) return;
 
-        this.enterMatchedRoom(roomId, 'host', guestId, matchStartTime);
+        this.enterMatchedRoom(roomId, 'host', guestId, countdownMs);
         break;
       }
 
@@ -644,14 +689,14 @@ export class MultiplayerClient {
       }
 
       case 'rematch_ready': {
-        const matchStartTime = (msg.matchStartTime as number) || Date.now() + 3000;
-        this.callbacks.onRematchStart(matchStartTime);
+        const countdownMs = (msg.countdownMs as number) || 3000;
+        this.callbacks.onRematchStart(countdownMs);
         break;
       }
     }
   }
 
-  private enterMatchedRoom(roomId: string, role: PlayerRole, partnerId: string, matchStartTime: number): void {
+  private enterMatchedRoom(roomId: string, role: PlayerRole, partnerId: string, countdownMs: number): void {
     this.isSearching = false;
     this.stopMatchmakingBeacons();
     this.inRoom = true;
@@ -663,7 +708,7 @@ export class MultiplayerClient {
 
     this.mqtt.subscribe(`${TOPIC_PREFIX}/room/${roomId}`);
     this.setupPeerConnection(role === 'host');
-    this.callbacks.onMatchFound(role, matchStartTime);
+    this.callbacks.onMatchFound(role, countdownMs);
   }
 
   private async flushPendingIceCandidates(): Promise<void> {
@@ -709,16 +754,27 @@ export class MultiplayerClient {
     };
 
     if (isInitiator) {
-      const dc = pc.createDataChannel('vegi-fast-sync', {
+      const fastDc = pc.createDataChannel('vegi-fast-sync', {
         ordered: false,
         maxRetransmits: 0
       });
-      this.attachDataChannel(dc);
+      this.attachDataChannel(fastDc);
+
+      const reliableDc = pc.createDataChannel('vegi-reliable-sync', {
+        ordered: true
+      });
+      this.attachDataChannel(reliableDc);
 
       try {
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         this.publishToRoom({ type: 'webrtc_offer', sdp: pc.localDescription });
+
+        this.offerRetryTimer = window.setTimeout(() => {
+          if (this.inRoom && this.pc === pc && !this.remoteDescSet && pc.localDescription) {
+            this.publishToRoom({ type: 'webrtc_offer', sdp: pc.localDescription });
+          }
+        }, 1400);
       } catch {}
     } else {
       pc.ondatachannel = (event: RTCDataChannelEvent) => {
@@ -728,18 +784,33 @@ export class MultiplayerClient {
   }
 
   private attachDataChannel(dc: RTCDataChannel): void {
-    this.fastChannel = dc;
+    if (dc.label === 'vegi-reliable-sync') {
+      this.reliableChannel = dc;
+    } else {
+      this.fastChannel = dc;
+    }
     dc.onmessage = (event: MessageEvent) => {
       try {
-        const msg = JSON.parse(event.data as string);
+        const msg = JSON.parse(event.data as string) as Record<string, unknown>;
         if (msg.type === 'sword_state') {
-          this.receiveRemoteSwords(msg.swords || []);
+          this.receiveRemoteSwords((msg.swords as SwordPose[]) || []);
+          return;
         }
+        const msgId = msg._mid as string | undefined;
+        if (msgId && !this.markMessageSeen(msgId)) {
+          return;
+        }
+        const senderId = (msg._sid as string) || this.partnerId || 'peer';
+        this.handleProtocolMessage(senderId, msg);
       } catch {}
     };
   }
 
   private cleanupPeerConnection(): void {
+    if (this.offerRetryTimer !== null) {
+      clearTimeout(this.offerRetryTimer);
+      this.offerRetryTimer = null;
+    }
     this.remoteDescSet = false;
     this.pendingCandidates = [];
     if (this.fastChannel) {
@@ -747,6 +818,12 @@ export class MultiplayerClient {
         this.fastChannel.close();
       } catch {}
       this.fastChannel = null;
+    }
+    if (this.reliableChannel) {
+      try {
+        this.reliableChannel.close();
+      } catch {}
+      this.reliableChannel = null;
     }
     if (this.pc) {
       try {
@@ -758,7 +835,11 @@ export class MultiplayerClient {
 
   public sendSwordState(swords: SwordPose[], now: number): void {
     if (!this.inRoom) return;
-    if (now - this.lastSwordSendTime < 16) return;
+
+    const p2pOpen = Boolean(this.fastChannel && this.fastChannel.readyState === 'open');
+    // 60Hz (16ms) over direct P2P WebRTC DataChannel; 22Hz (45ms) fallback over MQTT so broker never rate-limits
+    const minInterval = p2pOpen ? 16 : 45;
+    if (now - this.lastSwordSendTime < minInterval) return;
     this.lastSwordSendTime = now;
 
     const compactSwords = swords.map(s => ({
@@ -768,7 +849,7 @@ export class MultiplayerClient {
     }));
 
     const packet = { type: 'sword_state', swords: compactSwords };
-    if (this.fastChannel && this.fastChannel.readyState === 'open') {
+    if (p2pOpen && this.fastChannel) {
       try {
         this.fastChannel.send(JSON.stringify(packet));
         return;
@@ -779,28 +860,42 @@ export class MultiplayerClient {
 
   public sendSpawnTarget(target: Target): void {
     if (!this.inRoom) return;
-    this.publishToRoom({ type: 'spawn_target', target });
+    this.sendReliableEvent({ type: 'spawn_target', target });
   }
 
   public sendSliceTarget(payload: SliceEventPayload): void {
     if (!this.inRoom) return;
-    this.publishToRoom({ type: 'slice_target', payload });
+    this.sendReliableEvent({ type: 'slice_target', payload });
   }
 
   public sendScoreSync(payload: ScoreSyncPayload): void {
     if (!this.inRoom) return;
-    this.publishToRoom({ type: 'score_sync', payload });
+    const mid = randomId('m_');
+    const packet = { type: 'score_sync', payload, _sid: this.clientId, _mid: mid };
+    if (this.reliableChannel && this.reliableChannel.readyState === 'open') {
+      try {
+        this.reliableChannel.send(JSON.stringify(packet));
+        return;
+      } catch {}
+    }
+    this.publishToRoom({ type: 'score_sync', payload }, mid);
   }
 
   public sendMatchOver(payload: MatchOverPayload): void {
     if (!this.inRoom) return;
-    this.publishToRoom({ type: 'match_over', payload });
+    this.sendReliableEvent({ type: 'match_over', payload });
+    // Send a backup confirmation after 180ms so neither player ever misses match termination
+    window.setTimeout(() => {
+      if (this.inRoom) {
+        this.sendReliableEvent({ type: 'match_over', payload });
+      }
+    }, 180);
   }
 
   public sendRematchRequest(): number {
-    const matchStartTime = Date.now() + 3200;
-    this.publishToRoom({ type: 'rematch_ready', matchStartTime });
-    return matchStartTime;
+    const countdownMs = 3000;
+    this.sendReliableEvent({ type: 'rematch_ready', countdownMs });
+    return countdownMs;
   }
 
   private receiveRemoteSwords(swords: SwordPose[]): void {

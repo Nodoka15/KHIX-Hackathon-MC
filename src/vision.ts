@@ -11,6 +11,8 @@ export interface VisionPacket {
 export class VisionPipeline {
   private handLandmarker!: HandLandmarker;
   private isReady = false;
+  private lastVideoTime = -1;
+  private lastPacket: VisionPacket = { hands: [] };
 
   public async initialize(): Promise<void> {
     const wasmFileset = await FilesetResolver.forVisionTasks(
@@ -38,10 +40,16 @@ export class VisionPipeline {
       return { hands: [] };
     }
 
-    const handResults = this.handLandmarker.detectForVideo(video, timestamp);
+    if (video.currentTime === this.lastVideoTime) {
+      return this.lastPacket;
+    }
+    this.lastVideoTime = video.currentTime;
 
-    return {
+    const handResults = this.handLandmarker.detectForVideo(video, timestamp);
+    this.lastPacket = {
       hands: handResults.landmarks
     };
+
+    return this.lastPacket;
   }
 }

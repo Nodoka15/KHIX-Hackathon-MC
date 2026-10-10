@@ -1,9 +1,19 @@
 import soundFile from './audio/sword_slash.mp3';
 
+const AUDIO_POOL_SIZE = 4;
+const slashAudioPool: HTMLAudioElement[] = Array.from({ length: AUDIO_POOL_SIZE }, () => {
+  const a = new Audio(soundFile);
+  a.preload = 'auto';
+  a.volume = 0.65;
+  return a;
+});
+let slashAudioIdx = 0;
+
 function playSlashSound(): void {
   try {
-    const audio = new Audio(soundFile);
-    audio.volume = 0.65;
+    const audio = slashAudioPool[slashAudioIdx];
+    slashAudioIdx = (slashAudioIdx + 1) % AUDIO_POOL_SIZE;
+    audio.currentTime = 0;
     audio.play().catch(() => {});
   } catch {
     // Ignore audio playback errors
@@ -127,7 +137,9 @@ export class GameEngine {
     this.highScoreBannerShown = this.highScore === 0;
     this.opponentScore = 0;
     this.opponentLives = 3;
-    this.targets = [];
+    if (this.mode !== 'MULTIPLAYER') {
+      this.targets = [];
+    }
     this.particles = [];
     this.floatingTexts = [];
     this.slashTrails = [[], [], [], []];
@@ -278,6 +290,28 @@ export class GameEngine {
     });
   }
 
+  public syncRemoteTargets(remoteTargets: Target[]): void {
+    for (const rt of remoteTargets) {
+      const existing = this.targets.find(t => t.id === rt.id);
+      if (!existing) {
+        if (!rt.sliced) {
+          this.targets.push({
+            ...rt,
+            sliced: false
+          });
+        }
+      } else if (!existing.sliced && !rt.sliced) {
+        const drift = Math.hypot(existing.x - rt.x, existing.y - rt.y);
+        if (drift > 45) {
+          existing.x = existing.x * 0.5 + rt.x * 0.5;
+          existing.y = existing.y * 0.5 + rt.y * 0.5;
+          existing.vx = rt.vx;
+          existing.vy = rt.vy;
+        }
+      }
+    }
+  }
+
   public processSlash(
     p1: { x: number; y: number },
     p2: { x: number; y: number },
@@ -354,33 +388,53 @@ export class GameEngine {
     cutAngle: number,
     nearestX: number,
     nearestY: number,
-    onStateChanged: () => void
+    onStateChanged: () => void,
+    isBombHint?: boolean,
+    pointsHint?: number,
+    slicerScore?: number,
+    slicerLives?: number
   ): void {
     const item = this.targets.find(t => t.id === targetId);
-    if (!item) return;
 
-    // Even if locally already sliced in a race condition, avoid double-splitting
-    if (!item.sliced) {
+    if (item && !item.sliced) {
       this.sliceTargetItem(item, cutAngle, nearestX, nearestY, 'remote');
+    } else if (!item) {
+      playSlashSound();
+      this.emitSlashSparks(nearestX, nearestY, cutAngle, Boolean(isBombHint), 'remote');
     }
 
-    if (item.isBomb) {
+    const isBomb = item ? item.isBomb : Boolean(isBombHint);
+    const points = item ? item.points : (pointsHint ?? 15);
+    const fxX = item ? item.x : nearestX;
+    const fxY = item ? item.y : nearestY;
+
+    if (typeof slicerScore === 'number') {
+      this.opponentScore = slicerScore;
+    } else if (!isBomb) {
+      this.opponentScore += points;
+    }
+
+    if (typeof slicerLives === 'number') {
+      this.opponentLives = slicerLives;
+    } else if (isBomb) {
       this.opponentLives = Math.max(0, this.opponentLives - 1);
+    }
+
+    if (isBomb) {
       this.floatingTexts.push({
-        x: item.x,
-        y: item.y - 10,
+        x: fxX,
+        y: fxY - 10,
         vy: -2.2,
         text: 'FOE HIT BOMB!',
         color: '#00E5FF',
         alpha: 1.0
       });
     } else {
-      this.opponentScore += item.points;
       this.floatingTexts.push({
-        x: item.x,
-        y: item.y - 10,
+        x: fxX,
+        y: fxY - 10,
         vy: -2.2,
-        text: `+${item.points} FOE`,
+        text: `+${points} FOE`,
         color: '#00E5FF',
         alpha: 1.0
       });
