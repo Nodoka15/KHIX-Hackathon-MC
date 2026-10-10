@@ -1,0 +1,110 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  user-select: none;
+}
+
+body {
+  background-color: #0c0c0c;
+  color: #ffc904;
+  font-family: 'Arial Black', Impact, sans-serif;
+  overflow: hidden;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  width: 100vw;
+}
+
+#game-container {
+  position: relative;
+  width: 1280px;
+  height: 720px;
+  background-color: #000000;
+  border: 4px solid #ffc904;
+  overflow: hidden;
+}
+
+#webcam {
+  display: none;
+}
+
+#game-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  transform: scaleX(-1); /* Mirror camera for natural movement */
+}
+
+#ui-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 24px;
+}
+
+.hud-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 32px;
+  letter-spacing: 2px;
+}
+
+.lives-box {
+  display: flex;
+  gap: 12px;
+}
+
+.heart {
+  width: 32px;
+  height: 32px;
+  background-color: #ffc904;
+  clip-path: polygon(50% 0%, 100% 35%, 82% 100%, 50% 75%, 18% 100%, 0% 35%);
+}
+
+.heart.lost {
+  background-color: #1a1a1a;
+  border: 2px solid #333333;
+}
+
+.hud-modal {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background-color: #000000;
+  border: 4px solid #ffc904;
+  padding: 32px 48px;
+  text-align: center;
+  max-width: 580px;
+}
+
+.hud-modal p {
+  color: #ffffff;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  margin: 16px 0 24px 0;
+}
+
+.flat-btn {
+  pointer-events: auto;
+  background: #ffc904;
+  color: #000000;
+  border: none;
+  padding: 14px 32px;
+  font-family: inherit;
+  font-size: 22px;
+  font-weight: 900;
+  cursor: pointer;
+  text-transform: uppercase;
+}
+
+.flat-btn:hover {
+  background: #ffd84d;
+}

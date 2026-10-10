@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vegi Knights</title>
+  <link rel="stylesheet" href="./src/style.css" />
+</head>
+<body>
+  <div id="game-container">
+    <video id="webcam" playsinline autoplay muted></video>
+    <canvas id="game-canvas" width="1280" height="720"></canvas>
+    
+    <div id="ui-layer">
+      <div class="hud-top">
+        <div id="score-display">SCORE: 0</div>
+        <div class="lives-box">
+          <div class="heart" id="hp-1"></div>
+          <div class="heart" id="hp-2"></div>
+          <div class="heart" id="hp-3"></div>
+        </div>
+      </div>
+
+      <div id="modal-screen" class="hud-modal">
+        <h1 id="modal-title">CALIBRATION & PREVIEW</h1>
+        <p id="modal-desc">
+          Hold both hands up to verify tracking. Your Knightro helmet will remain active throughout the entire match.
+        </p>
+        <button id="action-btn" class="flat-btn">START MATCH</button>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="./src/main.ts"></script>
+</body>
+</html>
