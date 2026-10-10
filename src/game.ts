@@ -60,12 +60,17 @@ export interface FloatingText {
   alpha: number;
 }
 
+const HIGH_SCORE_KEY = 'vegi_knights_high_score';
+
 export class GameEngine {
   public mode: 'SINGLEPLAYER' | 'MULTIPLAYER' = 'SINGLEPLAYER';
   public state: 'MENU' | 'CALIBRATION' | 'SEARCHING' | 'COUNTDOWN' | 'PLAYING' | 'GAMEOVER' = 'MENU';
 
   public score = 0;
   public lives = 3;
+  public highScore = 0;
+  public isNewHighScore = false;
+  private highScoreBannerShown = false;
 
   public opponentScore = 0;
   public opponentLives = 3;
@@ -77,7 +82,7 @@ export class GameEngine {
   public targets: Target[] = [];
   public particles: SlashParticle[] = [];
   public floatingTexts: FloatingText[] = [];
-  public slashTrail: { x: number; y: number; age: number }[] = [];
+  public slashTrails: { x: number; y: number; age: number }[][] = [[], [], [], []];
 
   // Hands-free gesture timer
   public gestureProgress = 0; // 0 to 1
@@ -89,14 +94,43 @@ export class GameEngine {
   public onTargetSpawned?: (target: Target) => void;
   public onTargetSlicedByLocal?: (target: Target, cutAngle: number, nearestX: number, nearestY: number) => void;
 
+  constructor() {
+    this.loadHighScore();
+  }
+
+  private loadHighScore(): void {
+    try {
+      const saved = localStorage.getItem(HIGH_SCORE_KEY);
+      if (saved !== null) {
+        const parsed = parseInt(saved, 10);
+        if (!Number.isNaN(parsed) && parsed > 0) {
+          this.highScore = parsed;
+        }
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  private saveHighScore(val: number): void {
+    try {
+      localStorage.setItem(HIGH_SCORE_KEY, String(val));
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
   public start(): void {
     this.score = 0;
     this.lives = 3;
+    this.isNewHighScore = false;
+    this.highScoreBannerShown = this.highScore === 0;
     this.opponentScore = 0;
     this.opponentLives = 3;
     this.targets = [];
     this.particles = [];
     this.floatingTexts = [];
+    this.slashTrails = [[], [], [], []];
     this.state = 'PLAYING';
     const now = performance.now();
     this.lastSpawnTime = now;
@@ -109,6 +143,7 @@ export class GameEngine {
     this.targets = [];
     this.particles = [];
     this.floatingTexts = [];
+    this.slashTrails = [[], [], [], []];
     this.gestureProgress = 0;
   }
 
@@ -286,6 +321,23 @@ export class GameEngine {
             color: '#FFC904',
             alpha: 1.0
           });
+
+          if (this.mode === 'SINGLEPLAYER' && this.score > this.highScore) {
+            this.highScore = this.score;
+            this.isNewHighScore = true;
+            this.saveHighScore(this.highScore);
+            if (!this.highScoreBannerShown) {
+              this.highScoreBannerShown = true;
+              this.floatingTexts.push({
+                x: item.x,
+                y: item.y - 42,
+                vy: -2.6,
+                text: 'NEW HIGH SCORE!',
+                color: '#FFE57F',
+                alpha: 1.0
+              });
+            }
+          }
         }
 
         if (this.mode === 'MULTIPLAYER' && this.onTargetSlicedByLocal) {

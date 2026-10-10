@@ -66,15 +66,37 @@ body {
   text-align: right;
 }
 
+.hud-top-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
 .hud-tag {
   font-size: 12px;
   letter-spacing: 2px;
   color: #ffe57f;
-  margin-bottom: 4px;
+}
+
+.best-score-badge {
+  font-size: 12px;
+  letter-spacing: 1.5px;
+  color: #ffffff;
+  background: rgba(255, 201, 4, 0.18);
+  border: 1px solid #ffc904;
+  padding: 2px 8px;
+}
+
+.best-score-badge.new-record {
+  background: #ffc904;
+  color: #000000;
 }
 
 .rival-tag {
   color: #00e5ff;
+  margin-bottom: 4px;
 }
 
 .hud-row {

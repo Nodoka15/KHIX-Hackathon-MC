@@ -50,8 +50,6 @@ export interface MultiplayerCallbacks {
   onSearching: () => void;
   onMatchFound: (role: PlayerRole, matchStartTime: number) => void;
   onPeerLeft: () => void;
-  onRemoteStream: (stream: MediaStream) => void;
-  onRemoteFallbackFrame?: (dataUrl: string) => void;
   onSpawnTarget: (target: Target) => void;
   onSliceTarget: (payload: SliceEventPayload) => void;
   onScoreSync: (payload: ScoreSyncPayload) => void;
@@ -171,7 +169,6 @@ class MqttWsClient {
 
   private sendConnectPacket(): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    // Variable Header: Protocol Name "MQTT" (00 04 4d 51 54 54), Level 4 (04), CleanSession (02), KeepAlive 45s (00 2d)
     const varHeader = new Uint8Array([0x00, 0x04, 0x4d, 0x51, 0x54, 0x54, 0x04, 0x02, 0x00, 0x2d]);
     const payload = this.encodeMqttString(this.clientId);
     const remLen = this.encodeVarLen(varHeader.length + payload.length);
@@ -217,14 +214,13 @@ class MqttWsClient {
       const firstByte = this.rxBuffer[0];
       const pktType = firstByte & 0xf0;
 
-      // Decode variable remaining length
       let multiplier = 1;
       let remLength = 0;
       let offset = 1;
       let encodedByte = 0;
       do {
         if (offset >= this.rxBuffer.length) {
-          return; // Wait for more bytes
+          return;
         }
         encodedByte = this.rxBuffer[offset++];
         remLength += (encodedByte & 127) * multiplier;
@@ -233,18 +229,16 @@ class MqttWsClient {
 
       const packetEnd = offset + remLength;
       if (this.rxBuffer.length < packetEnd) {
-        return; // Incomplete packet, wait for next chunk
+        return;
       }
 
       if (pktType === 0x20) {
-        // CONNACK
         this.isConnected = true;
         this.startPing();
         for (const sub of this.subscriptions) {
           this.sendSubscribePacket(sub);
         }
       } else if (pktType === 0x30) {
-        // PUBLISH
         const topicLen = (this.rxBuffer[offset] << 8) | this.rxBuffer[offset + 1];
         let payloadOffset = offset + 2 + topicLen;
         const qos = (firstByte >> 1) & 0x03;
@@ -325,15 +319,10 @@ export class MultiplayerClient {
   private fastChannel: RTCDataChannel | null = null;
   private remoteDescSet = false;
   private pendingCandidates: RTCIceCandidateInit[] = [];
-  private webrtcMediaConnected = false;
-
-  private localStream: MediaStream | null = null;
-  private remoteStream: MediaStream | null = null;
 
   public role: PlayerRole = 'host';
   public inRoom = false;
   public isSearching = false;
-  public isMicMuted = false;
 
   private currentRoomId: string | null = null;
   private partnerId: string | null = null;
@@ -341,26 +330,14 @@ export class MultiplayerClient {
   private lastSkipTime = 0;
 
   private seekTimer: number | null = null;
-  private fallbackFrameTimer: number | null = null;
-  private fallbackCanvas: HTMLCanvasElement | null = null;
-  private fallbackCtx: CanvasRenderingContext2D | null = null;
 
   private seenMsgIds = new Set<string>();
   private seenMsgQueue: string[] = [];
 
-  // Smoothly interpolated opponent swords (up to 2 hands)
+  // Smoothly interpolated opponent swords (up to 4 finger cursors)
   public remoteSwords: InterpolatedSword[] = [];
-  public remoteSlashTrail: { x: number; y: number; age: number }[] = [];
+  public remoteSlashTrails: { x: number; y: number; age: number }[][] = [[], [], [], []];
 
-  // Voice activity levels (0 to 1)
-  public localVoiceLevel = 0;
-  public remoteVoiceLevel = 0;
-  private remoteFallbackVoiceLevel = 0;
-
-  private audioCtx: AudioContext | null = null;
-  private localAnalyser: AnalyserNode | null = null;
-  private remoteAnalyser: AnalyserNode | null = null;
-  private voiceDataArray = new Uint8Array(64);
   private lastSwordSendTime = 0;
 
   constructor(private callbacks: MultiplayerCallbacks) {
@@ -379,90 +356,6 @@ export class MultiplayerClient {
           }
         };
       } catch {}
-    }
-  }
-
-  public setLocalStream(stream: MediaStream): void {
-    this.localStream = stream;
-    this.setupLocalAudioAnalyser(stream);
-  }
-
-  public toggleMute(): boolean {
-    this.isMicMuted = !this.isMicMuted;
-    if (this.localStream) {
-      for (const track of this.localStream.getAudioTracks()) {
-        track.enabled = !this.isMicMuted;
-      }
-    }
-    return this.isMicMuted;
-  }
-
-  private ensureAudioContext(): AudioContext | null {
-    if (!this.audioCtx) {
-      const AudioContextClass =
-        window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      if (AudioContextClass) {
-        this.audioCtx = new AudioContextClass();
-      }
-    }
-    if (this.audioCtx && this.audioCtx.state === 'suspended') {
-      this.audioCtx.resume().catch(() => {});
-    }
-    return this.audioCtx;
-  }
-
-  private setupLocalAudioAnalyser(stream: MediaStream): void {
-    if (stream.getAudioTracks().length === 0) return;
-    try {
-      const ctx = this.ensureAudioContext();
-      if (!ctx) return;
-      const source = ctx.createMediaStreamSource(stream);
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 128;
-      analyser.smoothingTimeConstant = 0.6;
-      source.connect(analyser);
-      this.localAnalyser = analyser;
-    } catch {}
-  }
-
-  private setupRemoteAudioAnalyser(stream: MediaStream): void {
-    if (stream.getAudioTracks().length === 0) return;
-    try {
-      const ctx = this.ensureAudioContext();
-      if (!ctx) return;
-      const source = ctx.createMediaStreamSource(stream);
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 128;
-      analyser.smoothingTimeConstant = 0.6;
-      source.connect(analyser);
-      this.remoteAnalyser = analyser;
-    } catch {}
-  }
-
-  public updateVoiceLevels(): void {
-    if (this.localAnalyser && !this.isMicMuted) {
-      this.localAnalyser.getByteFrequencyData(this.voiceDataArray);
-      let sum = 0;
-      for (let i = 0; i < this.voiceDataArray.length; i++) {
-        sum += this.voiceDataArray[i];
-      }
-      this.localVoiceLevel = Math.min(1, sum / (this.voiceDataArray.length * 95));
-    } else {
-      this.localVoiceLevel = 0;
-    }
-
-    if (this.remoteAnalyser && this.inRoom && this.webrtcMediaConnected) {
-      this.remoteAnalyser.getByteFrequencyData(this.voiceDataArray);
-      let sum = 0;
-      for (let i = 0; i < this.voiceDataArray.length; i++) {
-        sum += this.voiceDataArray[i];
-      }
-      this.remoteVoiceLevel = Math.min(1, sum / (this.voiceDataArray.length * 95));
-    } else if (this.inRoom) {
-      this.remoteVoiceLevel = this.remoteFallbackVoiceLevel;
-      this.remoteFallbackVoiceLevel *= 0.88;
-    } else {
-      this.remoteVoiceLevel = 0;
     }
   }
 
@@ -496,17 +389,14 @@ export class MultiplayerClient {
     };
     const serialized = JSON.stringify(envelope);
 
-    // Send over global MQTT broker
     this.mqtt.publish(topic, serialized);
 
-    // Send over local server bridge if available
     if (this.localWs && this.localWs.readyState === WebSocket.OPEN) {
       try {
         this.localWs.send(JSON.stringify({ type: 'pubsub', topic, payload: serialized }));
       } catch {}
     }
 
-    // Send over same-browser BroadcastChannel if available
     if (this.broadcastChannel) {
       try {
         this.broadcastChannel.postMessage({ topic, payload: serialized });
@@ -532,7 +422,6 @@ export class MultiplayerClient {
 
     if (!senderId || senderId === this.clientId) return;
 
-    // Deduplicate across multi-path transports
     if (msgId) {
       if (this.seenMsgIds.has(msgId)) return;
       this.seenMsgIds.add(msgId);
@@ -553,7 +442,6 @@ export class MultiplayerClient {
   }
 
   public connectAndFindMatch(): void {
-    this.ensureAudioContext();
     this.notifyLeaveIfInRoom();
     this.cleanupPeerConnection();
 
@@ -562,7 +450,7 @@ export class MultiplayerClient {
     this.currentRoomId = null;
     this.partnerId = null;
     this.remoteSwords = [];
-    this.remoteSlashTrail = [];
+    this.remoteSlashTrails = [[], [], [], []];
 
     this.ensureTransportsConnected();
     this.callbacks.onSearching();
@@ -582,7 +470,7 @@ export class MultiplayerClient {
     this.currentRoomId = null;
     this.partnerId = null;
     this.remoteSwords = [];
-    this.remoteSlashTrail = [];
+    this.remoteSlashTrails = [[], [], [], []];
     this.cleanupPeerConnection();
   }
 
@@ -619,12 +507,10 @@ export class MultiplayerClient {
       case 'seek_match': {
         if (!this.isSearching || this.inRoom) return;
 
-        // If we just skipped this exact partner < 3.5s ago, wait briefly to prefer other players
         if (senderId === this.lastPartnerId && Date.now() - this.lastSkipTime < 3500) {
           return;
         }
 
-        // Deterministic coordinator: lower clientId sends proposal, or we send proposal if we also match
         if (this.clientId < senderId) {
           const roomId = randomId('room_');
           this.publishToTopic(`${TOPIC_PREFIX}/inbox/${senderId}`, {
@@ -677,7 +563,7 @@ export class MultiplayerClient {
         this.currentRoomId = null;
         this.partnerId = null;
         this.remoteSwords = [];
-        this.remoteSlashTrail = [];
+        this.remoteSlashTrails = [[], [], [], []];
         this.cleanupPeerConnection();
         this.callbacks.onPeerLeft();
         break;
@@ -720,17 +606,6 @@ export class MultiplayerClient {
           } catch {}
         } else {
           this.pendingCandidates.push(candidateInit);
-        }
-        break;
-      }
-
-      case 'cam_frame': {
-        if (!this.inRoom) return;
-        if (typeof msg.voice === 'number') {
-          this.remoteFallbackVoiceLevel = msg.voice as number;
-        }
-        if (!this.webrtcMediaConnected && typeof msg.dataUrl === 'string' && this.callbacks.onRemoteFallbackFrame) {
-          this.callbacks.onRemoteFallbackFrame(msg.dataUrl);
         }
         break;
       }
@@ -784,10 +659,9 @@ export class MultiplayerClient {
     this.currentRoomId = roomId;
     this.partnerId = partnerId;
     this.remoteSwords = [];
-    this.remoteSlashTrail = [];
+    this.remoteSlashTrails = [[], [], [], []];
 
     this.mqtt.subscribe(`${TOPIC_PREFIX}/room/${roomId}`);
-    this.startFallbackCameraStream();
     this.setupPeerConnection(role === 'host');
     this.callbacks.onMatchFound(role, matchStartTime);
   }
@@ -805,7 +679,7 @@ export class MultiplayerClient {
   }
 
   private async setupPeerConnection(isInitiator: boolean): Promise<void> {
-    this.cleanupPeerConnection(false);
+    this.cleanupPeerConnection();
 
     const pc = new RTCPeerConnection({
       iceCandidatePoolSize: 8,
@@ -827,26 +701,6 @@ export class MultiplayerClient {
     });
     this.pc = pc;
     this.remoteDescSet = false;
-
-    if (this.localStream) {
-      for (const track of this.localStream.getTracks()) {
-        pc.addTrack(track, this.localStream);
-      }
-    }
-
-    pc.ontrack = (event: RTCTrackEvent) => {
-      if (event.streams && event.streams[0]) {
-        this.remoteStream = event.streams[0];
-      } else {
-        if (!this.remoteStream) {
-          this.remoteStream = new MediaStream();
-        }
-        this.remoteStream.addTrack(event.track);
-      }
-      this.webrtcMediaConnected = true;
-      this.setupRemoteAudioAnalyser(this.remoteStream);
-      this.callbacks.onRemoteStream(this.remoteStream);
-    };
 
     pc.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
       if (event.candidate) {
@@ -885,45 +739,7 @@ export class MultiplayerClient {
     };
   }
 
-  private startFallbackCameraStream(): void {
-    this.stopFallbackCameraStream();
-    if (!this.fallbackCanvas) {
-      this.fallbackCanvas = document.createElement('canvas');
-      this.fallbackCanvas.width = 160;
-      this.fallbackCanvas.height = 90;
-      this.fallbackCtx = this.fallbackCanvas.getContext('2d');
-    }
-
-    const localVideoEl = document.getElementById('webcam') as HTMLVideoElement | null;
-
-    this.fallbackFrameTimer = window.setInterval(() => {
-      if (!this.inRoom || !localVideoEl || localVideoEl.readyState < 2 || !this.fallbackCtx || !this.fallbackCanvas) {
-        return;
-      }
-      try {
-        this.fallbackCtx.drawImage(localVideoEl, 0, 0, 160, 90);
-        const dataUrl = this.fallbackCanvas.toDataURL('image/jpeg', 0.42);
-        this.publishToRoom({
-          type: 'cam_frame',
-          dataUrl,
-          voice: Math.round(this.localVoiceLevel * 100) / 100
-        });
-      } catch {}
-    }, 140);
-  }
-
-  private stopFallbackCameraStream(): void {
-    if (this.fallbackFrameTimer !== null) {
-      clearInterval(this.fallbackFrameTimer);
-      this.fallbackFrameTimer = null;
-    }
-  }
-
-  private cleanupPeerConnection(stopFallback = true): void {
-    if (stopFallback) {
-      this.stopFallbackCameraStream();
-    }
-    this.webrtcMediaConnected = false;
+  private cleanupPeerConnection(): void {
     this.remoteDescSet = false;
     this.pendingCandidates = [];
     if (this.fastChannel) {
@@ -938,14 +754,11 @@ export class MultiplayerClient {
       } catch {}
       this.pc = null;
     }
-    this.remoteStream = null;
-    this.remoteAnalyser = null;
   }
 
   public sendSwordState(swords: SwordPose[], now: number): void {
     if (!this.inRoom) return;
-    // Send at ~45-60fps (every 20ms)
-    if (now - this.lastSwordSendTime < 20) return;
+    if (now - this.lastSwordSendTime < 16) return;
     this.lastSwordSendTime = now;
 
     const compactSwords = swords.map(s => ({
@@ -1037,7 +850,8 @@ export class MultiplayerClient {
 
     const blend = 1 - Math.exp(-32 * Math.min(dt, 0.05));
 
-    for (const sword of this.remoteSwords) {
+    for (let idx = 0; idx < this.remoteSwords.length; idx++) {
+      const sword = this.remoteSwords[idx];
       const ageSec = Math.min(0.028, Math.max(0, (now - sword.lastUpdate) / 1000));
       const predictedX = sword.targetX + sword.vx * ageSec * 0.35;
       const predictedY = sword.targetY + sword.vy * ageSec * 0.35;
@@ -1046,17 +860,22 @@ export class MultiplayerClient {
       sword.y += (predictedY - sword.y) * blend;
       sword.angle = lerpAngle(sword.angle, sword.targetAngle, blend);
 
-      this.remoteSlashTrail.push({
+      if (!this.remoteSlashTrails[idx]) {
+        this.remoteSlashTrails[idx] = [];
+      }
+      this.remoteSlashTrails[idx].push({
         x: sword.x,
         y: sword.y,
         age: 1.0
       });
     }
 
-    for (let i = this.remoteSlashTrail.length - 1; i >= 0; i--) {
-      this.remoteSlashTrail[i].age -= 0.08 * (dt * 60);
-      if (this.remoteSlashTrail[i].age <= 0) {
-        this.remoteSlashTrail.splice(i, 1);
+    for (const trail of this.remoteSlashTrails) {
+      for (let i = trail.length - 1; i >= 0; i--) {
+        trail[i].age -= 0.08 * (dt * 60);
+        if (trail[i].age <= 0) {
+          trail.splice(i, 1);
+        }
       }
     }
 

@@ -16,7 +16,10 @@
       <div class="hud-top">
         <!-- Local Player Stats -->
         <div class="player-hud local-hud">
-          <div class="hud-tag">YOU (GOLD KNIGHT)</div>
+          <div class="hud-top-meta">
+            <div class="hud-tag">YOU (GOLD KNIGHT)</div>
+            <div id="best-score-display" class="best-score-badge">BEST: 0</div>
+          </div>
           <div class="hud-row">
             <div id="score-display">SCORE: 0</div>
             <div class="lives-box">
@@ -31,7 +34,6 @@
         <div class="center-hud">
           <div id="mp-timer" style="display: none;">01:00</div>
           <div id="top-controls" class="top-controls" style="display: none;">
-            <button id="mute-btn" class="hud-chip-btn" style="display: none;">MIC: ON</button>
             <button id="next-opponent-btn" class="hud-chip-btn accent-cyan" style="display: none;">NEXT KNIGHT ⏭</button>
             <button id="menu-btn" class="hud-chip-btn">MAIN MENU</button>
           </div>
@@ -66,11 +68,11 @@
         <div id="menu-options" class="menu-options" style="display: none;">
           <button id="singleplayer-btn" class="mode-card-btn">
             <span class="mode-title">SINGLEPLAYER</span>
-            <span class="mode-sub">Solo Arcade • 3 Lives • High Score</span>
+            <span id="sp-mode-sub" class="mode-sub">Solo Arcade • 3 Lives • Best: 0</span>
           </button>
           <button id="multiplayer-btn" class="mode-card-btn mp-card-btn">
             <span class="mode-title">MULTIPLAYER 1v1</span>
-            <span class="mode-sub">Live Matchmaking • Video & Voice Call • Shared Arena</span>
+            <span class="mode-sub">Live Matchmaking • Shared Arena • 1v1 Battle</span>
           </button>
         </div>
 
@@ -79,29 +81,6 @@
           <button id="action-btn" class="flat-btn">START MATCH</button>
           <button id="secondary-btn" class="flat-btn cyan-btn" style="display: none;">NEXT OPPONENT ⏭</button>
           <button id="back-menu-btn" class="flat-btn outline-btn">MAIN MENU</button>
-        </div>
-      </div>
-
-      <!-- Picture-in-Picture Opponent Live Video & Voice Call Window -->
-      <div id="pip-container" class="pip-container" style="display: none;">
-        <div class="pip-header">
-          <div class="pip-status">
-            <span id="pip-dot" class="pip-dot"></span>
-            <span id="pip-label">OPPONENT VOICE & CAM</span>
-          </div>
-          <div id="voice-bars" class="voice-bars">
-            <span class="v-bar"></span>
-            <span class="v-bar"></span>
-            <span class="v-bar"></span>
-          </div>
-        </div>
-        <div class="pip-video-wrap">
-          <video id="remote-webcam" playsinline autoplay></video>
-          <img id="remote-webcam-fallback" alt="" style="display: none;" />
-          <div id="pip-placeholder" class="pip-placeholder">CONNECTING FEED...</div>
-        </div>
-        <div class="pip-footer">
-          <span id="local-mic-indicator">🎤 VOICE CALL ACTIVE</span>
         </div>
       </div>
     </div>
