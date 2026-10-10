@@ -16,6 +16,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+class Coordinates(BaseModel):
+    lat: float
+    lng: float
+
 class TransitBreakdown(BaseModel):
     garage_id: str
     garage_name: str
@@ -25,6 +29,7 @@ class TransitBreakdown(BaseModel):
     walk_mins: float
     total_transit_mins: float
     walk_distance_meters: float
+    coordinates: Coordinates
 
 class RecommendationResponse(BaseModel):
     destination: str

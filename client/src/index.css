@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+/* Ensure full-viewport sizing for root containers */
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+/* Base styles for MapLibre container and custom HTML markers */
+.maplibregl-map {
+  width: 100%;
+  height: 100%;
+  font-family: inherit;
+}
+
+/* Remove default blue outline on map canvas focus */
+.maplibregl-canvas {
+  outline: none;
+}
+
+/* Prevent text selection when dragging or clicking markers */
+.maplibregl-marker {
+  user-select: none;
+}
