@@ -1,5 +1,7 @@
 import { VisionPipeline, VisionPacket } from './vision';
 import { GameEngine } from './game';
+import { OneEuroFilter2D } from './filter';
+import { VegiRenderer } from './renderer';
 
 const video = document.getElementById('webcam') as HTMLVideoElement;
 const canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
@@ -13,6 +15,12 @@ const actionBtn = document.getElementById('action-btn') as HTMLButtonElement;
 
 const vision = new VisionPipeline();
 const game = new GameEngine();
+const renderer = new VegiRenderer(ctx);
+
+// Discrete filter instances for both potential hands
+const filters: OneEuroFilter2D[] = [new OneEuroFilter2D(1.0, 0.007), new OneEuroFilter2D(1.0, 0.007)];
+
+let lastFrameTime = performance.now();
 
 async function bootstrapCamera(): Promise<void> {
   const stream = await navigator.mediaDevices.getUserMedia({
@@ -35,72 +43,33 @@ function updateHearts(): void {
   if (game.lives <= 0) {
     game.state = 'GAMEOVER';
     modalTitle.textContent = 'VALIANT DEFEAT';
-    modalDesc.textContent = `FINAL SCORE: ${game.score}. The harvest has overtaken the realm.`;
-    actionBtn.textContent = 'FIGHT AGAIN';
+    modalDesc.textContent = `FINAL SCORE: ${game.score}. Raise both open hands to re-enter battle!`;
+    actionBtn.style.display = 'none';
     modalScreen.style.display = 'block';
   }
 }
 
-function renderKnightroHelmet(x: number, y: number, w: number, h: number): void {
-  ctx.save();
-  ctx.translate(x, y - h * 0.15);
-
-  const scaleW = w * 1.8;
-  const scaleH = h * 2.1;
-
-  // Solid Matte UCF Gold Helmet Shell
-  ctx.fillStyle = '#FFC904';
-  ctx.strokeStyle = '#000000';
-  ctx.lineWidth = 6;
-
-  ctx.beginPath();
-  ctx.moveTo(-scaleW * 0.45, -scaleH * 0.35);
-  ctx.quadraticCurveTo(0, -scaleH * 0.75, scaleW * 0.45, -scaleH * 0.35);
-  ctx.lineTo(scaleW * 0.42, scaleH * 0.42);
-  ctx.quadraticCurveTo(0, scaleH * 0.65, -scaleW * 0.42, scaleH * 0.42);
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-
-  // Black Crest Comb
-  ctx.fillStyle = '#111111';
-  ctx.beginPath();
-  ctx.moveTo(-scaleW * 0.08, -scaleH * 0.45);
-  ctx.lineTo(scaleW * 0.08, -scaleH * 0.45);
-  ctx.lineTo(scaleW * 0.06, -scaleH * 0.85);
-  ctx.lineTo(-scaleW * 0.06, -scaleH * 0.85);
-  ctx.closePath();
-  ctx.fill();
-
-  // Visor Shadow Cutout
-  ctx.fillStyle = '#000000';
-  ctx.beginPath();
-  ctx.moveTo(-scaleW * 0.35, -scaleH * 0.08);
-  ctx.lineTo(scaleW * 0.35, -scaleH * 0.08);
-  ctx.lineTo(scaleW * 0.28, scaleH * 0.12);
-  ctx.lineTo(-scaleW * 0.28, scaleH * 0.12);
-  ctx.closePath();
-  ctx.fill();
-
-  // Golden Grille Slits
-  ctx.fillStyle = '#FFC904';
-  for (let offset = -0.22; offset <= 0.22; offset += 0.09) {
-    ctx.fillRect(offset * scaleW - 3, -scaleH * 0.08, 6, scaleH * 0.2);
-  }
-
-  ctx.restore();
+function checkTwoHandsRaised(hands: VisionPacket['hands']): boolean {
+  if (hands.length < 2) return false;
+  // Open hand check: Fingertip (8) must be higher than wrist (0)
+  const hand1Open = hands[0][8].y < hands[0][0].y;
+  const hand2Open = hands[1][8].y < hands[1][0].y;
+  return hand1Open && hand2Open;
 }
 
 function loop(now: number): void {
-  // 1. Draw mirrored raw video
+  const dt = (now - lastFrameTime) / 1000.0;
+  lastFrameTime = now;
+
+  // 1. Mirrored Camera Video Feed
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-  // 2. Continuous Vision Inference
+  // 2. Vision Task Inference
   const visionData: VisionPacket = vision.processFrame(video, now);
 
-  // 3. Render Knightro Helmet across ALL states (CALIBRATION, PLAYING, GAMEOVER)
+  // 3. Persistent UCF Knightro Helmet
   if (visionData.faceTransform) {
-    renderKnightroHelmet(
+    renderer.renderKnightroHelmet(
       visionData.faceTransform.xCenter * canvas.width,
       visionData.faceTransform.yCenter * canvas.height,
       visionData.faceTransform.width * canvas.width,
@@ -108,14 +77,39 @@ function loop(now: number): void {
     );
   }
 
-  // 4. Ingest Hand Landmarks and Build Trail Points
-  visionData.hands.forEach(hand => {
-    // Landmark 8 corresponds to Index Fingertip; Landmark 5 is MCP base
-    const tip = hand[8];
-    const tipX = tip.x * canvas.width;
-    const tipY = tip.y * canvas.height;
+  // 4. Hands-free Gesture Detection (Holding both open hands raises charge meter)
+  if (game.state !== 'PLAYING') {
+    if (checkTwoHandsRaised(visionData.hands)) {
+      game.gestureProgress = Math.min(1.0, game.gestureProgress + dt / 1.5);
+      if (game.gestureProgress >= 1.0) {
+        game.start();
+        updateHearts();
+        modalScreen.style.display = 'none';
+        game.gestureProgress = 0;
+      }
+    } else {
+      game.gestureProgress = Math.max(0.0, game.gestureProgress - dt * 1.5);
+    }
+    renderer.renderGestureMeter(game.gestureProgress, canvas.width, canvas.height);
+  }
 
-    game.slashTrail.push({ x: tipX, y: tipY, age: 1.0 });
+  // 5. Tracked Hands, One-Euro Jitter Filtering & Sword Attachment
+  visionData.hands.forEach((hand, idx) => {
+    const rawTip = hand[8]; // Index tip
+    const rawKnuckle = hand[5]; // Index MCP base
+
+    const filter = filters[idx] || filters[0];
+    const smoothed = filter.filter(rawTip.x * canvas.width, rawTip.y * canvas.height, now);
+
+    const knuckleX = rawKnuckle.x * canvas.width;
+    const knuckleY = rawKnuckle.y * canvas.height;
+    const swordAngle = Math.atan2(smoothed.y - knuckleY, smoothed.x - knuckleX) + Math.PI / 2;
+
+    // Render Sword pointer locked to finger
+    renderer.renderSword(smoothed.x, smoothed.y, swordAngle);
+
+    // Trail creation for cutting plane
+    game.slashTrail.push({ x: smoothed.x, y: smoothed.y, age: 1.0 });
 
     if (game.slashTrail.length >= 2 && game.state === 'PLAYING') {
       const p1 = game.slashTrail[game.slashTrail.length - 2];
@@ -124,16 +118,14 @@ function loop(now: number): void {
     }
   });
 
-  // 5. Age & Draw Golden Slicing Trails
+  // 6. Draw Golden Sword Trails
   for (let i = game.slashTrail.length - 1; i >= 0; i--) {
     game.slashTrail[i].age -= 0.08;
-    if (game.slashTrail[i].age <= 0) {
-      game.slashTrail.splice(i, 1);
-    }
+    if (game.slashTrail[i].age <= 0) game.slashTrail.splice(i, 1);
   }
 
   ctx.strokeStyle = '#FFC904';
-  ctx.lineWidth = 10;
+  ctx.lineWidth = 8;
   ctx.lineCap = 'round';
   for (let i = 1; i < game.slashTrail.length; i++) {
     const t1 = game.slashTrail[i - 1];
@@ -148,63 +140,31 @@ function loop(now: number): void {
   }
   ctx.globalAlpha = 1.0;
 
-  // 6. Update Game Targets and UI
+  // 7. Update Physics, Particles, Render Split Halves & Targets
   game.update(now, canvas.width, canvas.height, updateHearts);
   scoreEl.textContent = `SCORE: ${game.score}`;
 
   for (const item of game.targets) {
-    if (item.sliced) continue;
-
-    ctx.save();
-    ctx.translate(item.x, item.y);
-    ctx.fillStyle = item.color;
-
-    if (item.isBomb) {
-      // Mushroom Cap
-      ctx.beginPath();
-      ctx.arc(0, -5, item.radius, Math.PI, 0);
-      ctx.closePath();
-      ctx.fill();
-      // Stem
-      ctx.fillStyle = '#FFFFFF';
-      ctx.fillRect(-item.radius * 0.35, -5, item.radius * 0.7, item.radius * 0.7);
-      // Spots
-      ctx.beginPath();
-      ctx.arc(-14, -18, 6, 0, Math.PI * 2);
-      ctx.arc(14, -18, 6, 0, Math.PI * 2);
-      ctx.fill();
-    } else {
-      ctx.beginPath();
-      ctx.arc(0, 0, item.radius, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = item.leaf;
-      ctx.beginPath();
-      ctx.ellipse(0, -item.radius, 8, 14, 0, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.restore();
+    renderer.renderTarget(item);
   }
+
+  renderer.renderParticles(game.particles);
 
   requestAnimationFrame(loop);
 }
 
-actionBtn.addEventListener('click', () => {
-  game.start();
-  updateHearts();
-  modalScreen.style.display = 'none';
-});
-
 async function main() {
-  actionBtn.disabled = true;
-  actionBtn.textContent = 'LOADING MODELS...';
-  
+  modalTitle.textContent = 'INITIALIZING SYSTEM';
+  modalDesc.textContent = 'Loading MediaPipe AI tracking models...';
+  actionBtn.style.display = 'none';
+
   await bootstrapCamera();
   await vision.initialize();
 
-  actionBtn.disabled = false;
-  actionBtn.textContent = 'START MATCH';
+  modalTitle.textContent = 'CALIBRATION MODE';
+  modalDesc.textContent = 'Raise both open hands in the air for 1.5 seconds to start the match without touching anything!';
   
   requestAnimationFrame(loop);
 }
 
-main().catch(err => console.error('Initialization failed:', err));
+main().catch(err => console.error('Initialization error:', err));
