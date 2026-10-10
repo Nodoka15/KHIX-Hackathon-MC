@@ -1,5 +1,4 @@
 class LowPassFilter {
-  private y: number | null = null;
   private s: number | null = null;
 
   constructor(private alpha: number = 0) {}
@@ -11,7 +10,6 @@ class LowPassFilter {
     } else {
       this.s = this.alpha * val + (1.0 - this.alpha) * this.s;
     }
-    this.y = val;
     return this.s;
   }
 

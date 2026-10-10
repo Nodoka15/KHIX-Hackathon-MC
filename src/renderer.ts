@@ -1,10 +1,17 @@
-import { Target } from './game';
+import { Target, FloatingText } from './game';
 
 export class VegiRenderer {
   constructor(private ctx: CanvasRenderingContext2D) {}
 
-  public renderSword(tipX: number, tipY: number, angle: number): void {
+  public renderSword(
+    tipX: number,
+    tipY: number,
+    angle: number,
+    variant: 'local' | 'remote' = 'local'
+  ): void {
     const ctx = this.ctx;
+    const isRemote = variant === 'remote';
+
     ctx.save();
     ctx.translate(tipX, tipY);
     ctx.rotate(angle);
@@ -12,10 +19,15 @@ export class VegiRenderer {
     // Tip is positioned exactly at the fingernail: (0, 0)
     // The blade body, guard, and hilt extend backward along the finger (positive Y)
 
-    // 1. Blade Body (Matte UCF Gold)
-    ctx.fillStyle = '#FFC904';
+    // 1. Blade Body (Matte UCF Gold for Local, Cyber Silver/Cyan for Opponent)
+    ctx.fillStyle = isRemote ? '#00E5FF' : '#FFC904';
     ctx.strokeStyle = '#000000';
     ctx.lineWidth = 3.5;
+
+    if (isRemote) {
+      ctx.shadowColor = '#00E5FF';
+      ctx.shadowBlur = 12;
+    }
 
     ctx.beginPath();
     ctx.moveTo(0, 0);       // Exact fingernail / point tip
@@ -25,10 +37,11 @@ export class VegiRenderer {
     ctx.lineTo(-9, 18);
     ctx.closePath();
     ctx.fill();
+    ctx.shadowBlur = 0;
     ctx.stroke();
 
     // 2. Bevel Shading (Depth facet)
-    ctx.fillStyle = '#FFE57F';
+    ctx.fillStyle = isRemote ? '#B2EBF2' : '#FFE57F';
     ctx.beginPath();
     ctx.moveTo(0, 0);
     ctx.lineTo(0, 85);
@@ -38,22 +51,22 @@ export class VegiRenderer {
     ctx.fill();
 
     // Center blade ridge
-    ctx.strokeStyle = '#BA9B37';
+    ctx.strokeStyle = isRemote ? '#00838F' : '#BA9B37';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.moveTo(0, 2);
     ctx.lineTo(0, 85);
     ctx.stroke();
 
-    // 3. Crossguard (Matte Black)
-    ctx.fillStyle = '#111111';
+    // 3. Crossguard (Matte Black for Local, Crimson Accent for Opponent)
+    ctx.fillStyle = isRemote ? '#FF2E54' : '#111111';
     ctx.strokeStyle = '#000000';
     ctx.lineWidth = 3;
     ctx.fillRect(-18, 85, 36, 8);
     ctx.strokeRect(-18, 85, 36, 8);
 
     // 4. Hilt & Pommel (resting down the finger)
-    ctx.fillStyle = '#FFC904';
+    ctx.fillStyle = isRemote ? '#00E5FF' : '#FFC904';
     ctx.strokeStyle = '#000000';
     ctx.lineWidth = 2;
     ctx.fillRect(-3.5, 93, 7, 18);
@@ -65,7 +78,25 @@ export class VegiRenderer {
     ctx.stroke();
 
     ctx.restore();
+
+    // Floating badge for Opponent sword so both players clearly track each other
+    if (isRemote) {
+      ctx.save();
+      ctx.translate(tipX, tipY - 22);
+      ctx.scale(-1, 1); // Un-mirror text since canvas has scaleX(-1)
+      ctx.font = '900 13px "Arial Black", Impact, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(-24, -14, 48, 18);
+      ctx.strokeStyle = '#00E5FF';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(-24, -14, 48, 18);
+      ctx.fillStyle = '#00E5FF';
+      ctx.fillText('RIVAL', 0, -1);
+      ctx.restore();
+    }
   }
+
 
   public renderTarget(item: Target): void {
     const ctx = this.ctx;
@@ -324,6 +355,48 @@ export class VegiRenderer {
       ctx.beginPath();
       ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
       ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  public renderSlashTrail(
+    trail: { x: number; y: number; age: number }[],
+    color: string = '#FFC904'
+  ): void {
+    if (trail.length < 2) return;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 8;
+    ctx.lineCap = 'round';
+    for (let i = 1; i < trail.length; i++) {
+      const t1 = trail[i - 1];
+      const t2 = trail[i];
+      if (Math.hypot(t2.x - t1.x, t2.y - t1.y) < 160) {
+        ctx.globalAlpha = Math.max(0, Math.min(1, t2.age));
+        ctx.beginPath();
+        ctx.moveTo(t1.x, t1.y);
+        ctx.lineTo(t2.x, t2.y);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  public renderFloatingTexts(texts: FloatingText[]): void {
+    const ctx = this.ctx;
+    for (const ft of texts) {
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, ft.alpha);
+      ctx.translate(ft.x, ft.y);
+      ctx.scale(-1, 1); // Un-mirror text for mirrored canvas
+      ctx.font = '900 22px "Arial Black", Impact, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 4;
+      ctx.strokeText(ft.text, 0, 0);
+      ctx.fillStyle = ft.color;
+      ctx.fillText(ft.text, 0, 0);
       ctx.restore();
     }
   }
