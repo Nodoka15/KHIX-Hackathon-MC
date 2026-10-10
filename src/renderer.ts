@@ -1,4 +1,4 @@
-import { Target, SlicedHalf, SlashParticle } from './game';
+import { Target } from './game';
 
 export class VegiRenderer {
   constructor(private ctx: CanvasRenderingContext2D) {}
@@ -9,94 +9,60 @@ export class VegiRenderer {
     ctx.translate(tipX, tipY);
     ctx.rotate(angle);
 
-    // Flat Matte Knight Broadsword
-    // Blade
+    // Tip is positioned exactly at the fingernail: (0, 0)
+    // The blade body, guard, and hilt extend backward along the finger (positive Y)
+
+    // 1. Blade Body (Matte UCF Gold)
     ctx.fillStyle = '#FFC904';
     ctx.strokeStyle = '#000000';
-    ctx.lineWidth = 4;
+    ctx.lineWidth = 3.5;
 
     ctx.beginPath();
-    ctx.moveTo(0, 0); // Fingertip is blade tip
-    ctx.lineTo(9, -70);
-    ctx.lineTo(6, -90);
-    ctx.lineTo(-6, -90);
-    ctx.lineTo(-9, -70);
+    ctx.moveTo(0, 0);       // Exact fingernail / point tip
+    ctx.lineTo(9, 18);
+    ctx.lineTo(7, 85);
+    ctx.lineTo(-7, 85);
+    ctx.lineTo(-9, 18);
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
 
-    // Central blade fuller ridge
-    ctx.strokeStyle = '#BA9B37';
-    ctx.lineWidth = 2;
+    // 2. Bevel Shading (Depth facet)
+    ctx.fillStyle = '#FFE57F';
     ctx.beginPath();
-    ctx.moveTo(0, -10);
-    ctx.lineTo(0, -85);
+    ctx.moveTo(0, 0);
+    ctx.lineTo(0, 85);
+    ctx.lineTo(-7, 85);
+    ctx.lineTo(-9, 18);
+    ctx.closePath();
+    ctx.fill();
+
+    // Center blade ridge
+    ctx.strokeStyle = '#BA9B37';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(0, 2);
+    ctx.lineTo(0, 85);
     ctx.stroke();
 
-    // Crossguard
+    // 3. Crossguard (Matte Black)
     ctx.fillStyle = '#111111';
     ctx.strokeStyle = '#000000';
     ctx.lineWidth = 3;
-    ctx.fillRect(-22, -94, 44, 8);
-    ctx.strokeRect(-22, -94, 44, 8);
+    ctx.fillRect(-18, 85, 36, 8);
+    ctx.strokeRect(-18, 85, 36, 8);
 
-    // Hilt / Pommel
-    ctx.fillStyle = '#FFC904';
-    ctx.fillRect(-4, -114, 8, 20);
-    ctx.beginPath();
-    ctx.arc(0, -118, 6, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.restore();
-  }
-
-  public renderKnightroHelmet(x: number, y: number, w: number, h: number): void {
-    const ctx = this.ctx;
-    ctx.save();
-    ctx.translate(x, y - h * 0.15);
-
-    const scaleW = w * 1.8;
-    const scaleH = h * 2.1;
-
-    // Solid Matte UCF Gold Helmet Shell
+    // 4. Hilt & Pommel (resting down the finger)
     ctx.fillStyle = '#FFC904';
     ctx.strokeStyle = '#000000';
-    ctx.lineWidth = 6;
+    ctx.lineWidth = 2;
+    ctx.fillRect(-3.5, 93, 7, 18);
+    ctx.strokeRect(-3.5, 93, 7, 18);
 
     ctx.beginPath();
-    ctx.moveTo(-scaleW * 0.45, -scaleH * 0.35);
-    ctx.quadraticCurveTo(0, -scaleH * 0.75, scaleW * 0.45, -scaleH * 0.35);
-    ctx.lineTo(scaleW * 0.42, scaleH * 0.42);
-    ctx.quadraticCurveTo(0, scaleH * 0.65, -scaleW * 0.42, scaleH * 0.42);
-    ctx.closePath();
+    ctx.arc(0, 114, 5, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
-
-    // Black Crest Comb
-    ctx.fillStyle = '#111111';
-    ctx.beginPath();
-    ctx.moveTo(-scaleW * 0.08, -scaleH * 0.45);
-    ctx.lineTo(scaleW * 0.08, -scaleH * 0.45);
-    ctx.lineTo(scaleW * 0.06, -scaleH * 0.85);
-    ctx.lineTo(-scaleW * 0.06, -scaleH * 0.85);
-    ctx.closePath();
-    ctx.fill();
-
-    // Visor Grille
-    ctx.fillStyle = '#000000';
-    ctx.beginPath();
-    ctx.moveTo(-scaleW * 0.35, -scaleH * 0.08);
-    ctx.lineTo(scaleW * 0.35, -scaleH * 0.08);
-    ctx.lineTo(scaleW * 0.28, scaleH * 0.12);
-    ctx.lineTo(-scaleW * 0.28, scaleH * 0.12);
-    ctx.closePath();
-    ctx.fill();
-
-    ctx.fillStyle = '#FFC904';
-    for (let offset = -0.22; offset <= 0.22; offset += 0.09) {
-      ctx.fillRect(offset * scaleW - 3, -scaleH * 0.08, 6, scaleH * 0.2);
-    }
 
     ctx.restore();
   }
@@ -107,7 +73,7 @@ export class VegiRenderer {
       ctx.save();
       ctx.translate(item.x, item.y);
       ctx.rotate(item.rotation);
-      this.drawVegetableModel(item.type);
+      this.draw3DVegetable(item.type);
       ctx.restore();
     } else if (item.splitPieces) {
       for (const half of item.splitPieces) {
@@ -115,64 +81,92 @@ export class VegiRenderer {
         ctx.translate(half.x, half.y);
         ctx.rotate(half.rotation);
 
-        // Clip along slice plane
+        // Bounded clip along the cut axis matching the vegetable's actual size
+        const clipSize = item.radius * 2.2;
         ctx.beginPath();
-        const clipDist = 120;
-        ctx.rect(half.side === -1 ? -clipDist : 0, -clipDist, clipDist, clipDist * 2);
+        ctx.rect(half.side === -1 ? -clipSize : 0, -clipSize, clipSize, clipSize * 2);
         ctx.clip();
 
-        this.drawVegetableModel(item.type);
+        // Render the half model
+        this.draw3DVegetable(item.type);
+
+        // Flat cut boundary stroke strictly restricted to the vegetable radius
+        ctx.strokeStyle = '#111111';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.moveTo(0, -item.radius * 0.9);
+        ctx.lineTo(0, item.radius * 0.9);
+        ctx.stroke();
+
         ctx.restore();
       }
     }
   }
 
-  private drawVegetableModel(type: Target['type']): void {
+  private draw3DVegetable(type: Target['type']): void {
     const ctx = this.ctx;
     ctx.lineWidth = 3;
     ctx.strokeStyle = '#000000';
 
     switch (type) {
-      case 'carrot':
-        // Conical body
-        ctx.fillStyle = '#FF7A00';
+      case 'carrot': {
+        // Body cone
         ctx.beginPath();
-        ctx.moveTo(0, 38);
+        ctx.moveTo(0, 42);
         ctx.lineTo(16, -24);
         ctx.quadraticCurveTo(0, -32, -16, -24);
         ctx.closePath();
+
+        // 3D cylindrical shading
+        const grad = ctx.createLinearGradient(-16, 0, 16, 0);
+        grad.addColorStop(0, '#E65100');
+        grad.addColorStop(0.35, '#FFA726');
+        grad.addColorStop(1, '#BF360C');
+        ctx.fillStyle = grad;
         ctx.fill();
         ctx.stroke();
 
-        // Rib marks
-        ctx.strokeStyle = '#D95E00';
-        for (const y of [-10, 4, 18]) {
+        // Horizontal ridges with specular rim
+        ctx.strokeStyle = '#8D2600';
+        ctx.lineWidth = 2;
+        for (const y of [-12, 2, 18, 30]) {
           ctx.beginPath();
-          ctx.moveTo(-7, y);
-          ctx.lineTo(7, y);
+          ctx.arc(0, y, 6, 0.2, Math.PI - 0.2);
           ctx.stroke();
         }
 
-        // Green leaves
+        // 3D Stem tufts
         ctx.fillStyle = '#2E7D32';
         ctx.beginPath();
-        ctx.ellipse(-8, -36, 5, 14, -0.3, 0, Math.PI * 2);
-        ctx.ellipse(0, -40, 5, 16, 0, 0, Math.PI * 2);
-        ctx.ellipse(8, -36, 5, 14, 0.3, 0, Math.PI * 2);
+        ctx.ellipse(-7, -35, 5, 14, -0.3, 0, Math.PI * 2);
+        ctx.ellipse(0, -38, 5, 16, 0, 0, Math.PI * 2);
+        ctx.ellipse(7, -35, 5, 14, 0.3, 0, Math.PI * 2);
         ctx.fill();
         break;
+      }
 
-      case 'eggplant':
-        // Teardrop bulb
-        ctx.fillStyle = '#4A154B';
+      case 'eggplant': {
+        // Teardrop shape with radial sphere volume
         ctx.beginPath();
         ctx.moveTo(0, -26);
-        ctx.bezierCurveTo(24, -20, 34, 18, 0, 36);
-        ctx.bezierCurveTo(-34, 18, -24, -20, 0, -26);
+        ctx.bezierCurveTo(28, -20, 38, 20, 0, 38);
+        ctx.bezierCurveTo(-38, 20, -28, -20, 0, -26);
+
+        const grad = ctx.createRadialGradient(-10, -4, 4, 0, 8, 38);
+        grad.addColorStop(0, '#7B1FA2');
+        grad.addColorStop(0.6, '#380036');
+        grad.addColorStop(1, '#1A0019');
+        ctx.fillStyle = grad;
         ctx.fill();
         ctx.stroke();
 
-        // Calyx top
+        // Specular highlight gleam
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.28)';
+        ctx.beginPath();
+        ctx.ellipse(-10, 0, 6, 16, -0.3, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 3D Calyx
         ctx.fillStyle = '#2E7D32';
         ctx.beginPath();
         ctx.moveTo(-16, -24);
@@ -185,59 +179,95 @@ export class VegiRenderer {
         ctx.fill();
         ctx.stroke();
         break;
+      }
 
-      case 'broccoli':
-        // Stalk
-        ctx.fillStyle = '#81C784';
+      case 'broccoli': {
+        // 3D Stalk
+        const stalkGrad = ctx.createLinearGradient(-10, 0, 10, 0);
+        stalkGrad.addColorStop(0, '#66BB6A');
+        stalkGrad.addColorStop(0.4, '#A5D6A7');
+        stalkGrad.addColorStop(1, '#388E3C');
+        ctx.fillStyle = stalkGrad;
         ctx.fillRect(-10, 4, 20, 28);
         ctx.strokeRect(-10, 4, 20, 28);
 
-        // Flory clusters
-        ctx.fillStyle = '#1B5E20';
-        ctx.beginPath();
-        ctx.arc(-16, -6, 16, 0, Math.PI * 2);
-        ctx.arc(0, -18, 20, 0, Math.PI * 2);
-        ctx.arc(16, -6, 16, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        break;
+        // Volumetric Florets
+        const drawFloret = (cx: number, cy: number, r: number) => {
+          const floretGrad = ctx.createRadialGradient(cx - r * 0.3, cy - r * 0.3, 2, cx, cy, r);
+          floretGrad.addColorStop(0, '#4CAF50');
+          floretGrad.addColorStop(0.7, '#1B5E20');
+          floretGrad.addColorStop(1, '#0D3811');
+          ctx.fillStyle = floretGrad;
+          ctx.beginPath();
+          ctx.arc(cx, cy, r, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        };
 
-      case 'corn':
-        // Cob
-        ctx.fillStyle = '#FDD835';
+        drawFloret(-16, -6, 17);
+        drawFloret(16, -6, 17);
+        drawFloret(0, -18, 21);
+        break;
+      }
+
+      case 'corn': {
+        // Cylindrical cob gradient
+        const cobGrad = ctx.createLinearGradient(-16, 0, 16, 0);
+        cobGrad.addColorStop(0, '#FBC02D');
+        cobGrad.addColorStop(0.3, '#FFEE58');
+        cobGrad.addColorStop(1, '#F57F17');
+        ctx.fillStyle = cobGrad;
+
         ctx.beginPath();
         ctx.ellipse(0, 0, 16, 32, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
 
-        // Kernels pattern
-        ctx.fillStyle = '#F57F17';
-        for (let y = -20; y <= 20; y += 10) {
-          for (let x = -8; x <= 8; x += 8) {
+        // 3D Round Kernels
+        for (let y = -22; y <= 22; y += 9) {
+          for (let x = -9; x <= 9; x += 9) {
+            const kGrad = ctx.createRadialGradient(x - 1, y - 1, 1, x, y, 3.5);
+            kGrad.addColorStop(0, '#FFF59D');
+            kGrad.addColorStop(1, '#E65100');
+            ctx.fillStyle = kGrad;
             ctx.beginPath();
-            ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+            ctx.arc(x, y, 3, 0, Math.PI * 2);
             ctx.fill();
           }
         }
 
-        // Husks
-        ctx.fillStyle = '#4CAF50';
+        // Wraparound Husks
+        ctx.fillStyle = '#43A047';
         ctx.beginPath();
-        ctx.moveTo(-16, 18);
-        ctx.quadraticCurveTo(-24, 0, -12, -26);
-        ctx.quadraticCurveTo(-14, 10, -12, 28);
+        ctx.moveTo(-16, 20);
+        ctx.quadraticCurveTo(-26, 0, -14, -24);
+        ctx.quadraticCurveTo(-14, 12, -12, 30);
         ctx.fill();
+        ctx.stroke();
         break;
+      }
 
-      case 'tomato':
-        // Round bulb with top notch
-        ctx.fillStyle = '#E53935';
+      case 'tomato': {
+        // Spherical lighting gradient
+        const tGrad = ctx.createRadialGradient(-8, -8, 4, 0, 2, 30);
+        tGrad.addColorStop(0, '#FF5252');
+        tGrad.addColorStop(0.6, '#D32F2F');
+        tGrad.addColorStop(1, '#8E0000');
+        ctx.fillStyle = tGrad;
+
         ctx.beginPath();
         ctx.arc(0, 2, 28, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
 
-        // 5-Point Calyx
+        // Curved highlight arc
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(0, 2, 22, -Math.PI * 0.75, -Math.PI * 0.45);
+        ctx.stroke();
+
+        // Star calyx
         ctx.fillStyle = '#2E7D32';
         ctx.beginPath();
         for (let i = 0; i < 5; i++) {
@@ -248,33 +278,44 @@ export class VegiRenderer {
         ctx.closePath();
         ctx.fill();
         break;
+      }
 
-      case 'mushroom':
-        // Poison Mushroom Cap
-        ctx.fillStyle = '#7B1FA2';
+      case 'mushroom': {
+        // Volumetric Poison Mushroom Dome
+        const capGrad = ctx.createRadialGradient(-6, -18, 4, 0, -6, 32);
+        capGrad.addColorStop(0, '#BA68C8');
+        capGrad.addColorStop(0.6, '#6A1B9A');
+        capGrad.addColorStop(1, '#38006B');
+        ctx.fillStyle = capGrad;
+
         ctx.beginPath();
         ctx.arc(0, -6, 30, Math.PI, 0);
         ctx.closePath();
         ctx.fill();
         ctx.stroke();
 
+        // Shaded Stem
+        const stemGrad = ctx.createLinearGradient(-10, 0, 10, 0);
+        stemGrad.addColorStop(0, '#BDBDBD');
+        stemGrad.addColorStop(0.4, '#FAFAFA');
+        stemGrad.addColorStop(1, '#757575');
+        ctx.fillStyle = stemGrad;
+        ctx.fillRect(-10, -6, 20, 28);
+        ctx.strokeRect(-10, -6, 20, 28);
+
         // Skull Spots
-        ctx.fillStyle = '#E1BEE7';
+        ctx.fillStyle = '#EDE7F6';
         ctx.beginPath();
         ctx.arc(-12, -18, 5, 0, Math.PI * 2);
         ctx.arc(12, -18, 5, 0, Math.PI * 2);
         ctx.arc(0, -10, 4, 0, Math.PI * 2);
         ctx.fill();
-
-        // Bone-white stem
-        ctx.fillStyle = '#EEEEEE';
-        ctx.fillRect(-10, -6, 20, 28);
-        ctx.strokeRect(-10, -6, 20, 28);
         break;
+      }
     }
   }
 
-  public renderParticles(particles: SlashParticle[]): void {
+  public renderParticles(particles: any[]): void {
     const ctx = this.ctx;
     for (const p of particles) {
       ctx.save();
@@ -295,14 +336,12 @@ export class VegiRenderer {
     const radius = 58;
 
     ctx.save();
-    // Dark backdrop ring
     ctx.lineWidth = 10;
     ctx.strokeStyle = '#111111';
     ctx.beginPath();
     ctx.arc(cx, cy, radius, 0, Math.PI * 2);
     ctx.stroke();
 
-    // Charging Gold Meter
     ctx.strokeStyle = '#FFC904';
     ctx.lineCap = 'round';
     ctx.beginPath();

@@ -1,3 +1,5 @@
+import soundFile from "./audio/sword_slash.mp3";
+
 export interface Target {
   id: number;
   type: 'carrot' | 'eggplant' | 'broccoli' | 'corn' | 'tomato' | 'mushroom';
@@ -164,7 +166,9 @@ export class GameEngine {
       const nearestY = p1.y + clampedU * dy;
 
       if (Math.hypot(item.x - nearestX, item.y - nearestY) < item.radius) {
+
         item.sliced = true;
+        audioSliced.play();
 
         // Emit slash particles
         this.emitSlashSparks(nearestX, nearestY, cutAngle, item.isBomb);

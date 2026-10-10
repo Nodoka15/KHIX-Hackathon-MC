@@ -17,7 +17,6 @@ const vision = new VisionPipeline();
 const game = new GameEngine();
 const renderer = new VegiRenderer(ctx);
 
-// Discrete filter instances for both potential hands
 const filters: OneEuroFilter2D[] = [new OneEuroFilter2D(1.0, 0.007), new OneEuroFilter2D(1.0, 0.007)];
 
 let lastFrameTime = performance.now();
@@ -51,33 +50,20 @@ function updateHearts(): void {
 
 function checkTwoHandsRaised(hands: VisionPacket['hands']): boolean {
   if (hands.length < 2) return false;
-  // Open hand check: Fingertip (8) must be higher than wrist (0)
-  const hand1Open = hands[0][8].y < hands[0][0].y;
-  const hand2Open = hands[1][8].y < hands[1][0].y;
-  return hand1Open && hand2Open;
+  return hands[0][8].y < hands[0][0].y && hands[1][8].y < hands[1][0].y;
 }
 
 function loop(now: number): void {
   const dt = (now - lastFrameTime) / 1000.0;
   lastFrameTime = now;
 
-  // 1. Mirrored Camera Video Feed
+  // 1. Draw Mirrored Raw Camera
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-  // 2. Vision Task Inference
+  // 2. Vision Task Inference (Hand Landmarker only)
   const visionData: VisionPacket = vision.processFrame(video, now);
 
-  // 3. Persistent UCF Knightro Helmet
-  if (visionData.faceTransform) {
-    renderer.renderKnightroHelmet(
-      visionData.faceTransform.xCenter * canvas.width,
-      visionData.faceTransform.yCenter * canvas.height,
-      visionData.faceTransform.width * canvas.width,
-      visionData.faceTransform.height * canvas.height
-    );
-  }
-
-  // 4. Hands-free Gesture Detection (Holding both open hands raises charge meter)
+  // 3. Hands-free Gesture Detection
   if (game.state !== 'PLAYING') {
     if (checkTwoHandsRaised(visionData.hands)) {
       game.gestureProgress = Math.min(1.0, game.gestureProgress + dt / 1.5);
@@ -93,22 +79,25 @@ function loop(now: number): void {
     renderer.renderGestureMeter(game.gestureProgress, canvas.width, canvas.height);
   }
 
-  // 5. Tracked Hands, One-Euro Jitter Filtering & Sword Attachment
+  // 4. Track Hands, Filter Jitter & Render Outward-Facing Sword
+  // 4. Track Hands, Filter Jitter & Render Sword Aligned to Fingernail
   visionData.hands.forEach((hand, idx) => {
-    const rawTip = hand[8]; // Index tip
-    const rawKnuckle = hand[5]; // Index MCP base
+    const rawTip = hand[8];     // Index tip (fingernail)
+    const rawKnuckle = hand[5]; // Index MCP knuckle
 
     const filter = filters[idx] || filters[0];
     const smoothed = filter.filter(rawTip.x * canvas.width, rawTip.y * canvas.height, now);
 
     const knuckleX = rawKnuckle.x * canvas.width;
     const knuckleY = rawKnuckle.y * canvas.height;
-    const swordAngle = Math.atan2(smoothed.y - knuckleY, smoothed.x - knuckleX) + Math.PI / 2;
 
-    // Render Sword pointer locked to finger
+    // Angle pointing from fingertip back toward knuckle
+    const swordAngle = Math.atan2(knuckleY - smoothed.y, knuckleX - smoothed.x) - Math.PI / 2;
+
+    // Render Sword with tip locked directly to fingernail
     renderer.renderSword(smoothed.x, smoothed.y, swordAngle);
 
-    // Trail creation for cutting plane
+    // Record trail for slicing intersections
     game.slashTrail.push({ x: smoothed.x, y: smoothed.y, age: 1.0 });
 
     if (game.slashTrail.length >= 2 && game.state === 'PLAYING') {
@@ -118,7 +107,7 @@ function loop(now: number): void {
     }
   });
 
-  // 6. Draw Golden Sword Trails
+  // 5. Sword Trails
   for (let i = game.slashTrail.length - 1; i >= 0; i--) {
     game.slashTrail[i].age -= 0.08;
     if (game.slashTrail[i].age <= 0) game.slashTrail.splice(i, 1);
@@ -140,7 +129,7 @@ function loop(now: number): void {
   }
   ctx.globalAlpha = 1.0;
 
-  // 7. Update Physics, Particles, Render Split Halves & Targets
+  // 6. Game Physics, 3D Targets & Particle Rendering
   game.update(now, canvas.width, canvas.height, updateHearts);
   scoreEl.textContent = `SCORE: ${game.score}`;
 
@@ -162,7 +151,7 @@ async function main() {
   await vision.initialize();
 
   modalTitle.textContent = 'CALIBRATION MODE';
-  modalDesc.textContent = 'Raise both open hands in the air for 1.5 seconds to start the match without touching anything!';
+  modalDesc.textContent = 'Raise both open hands in the air for 1.5 seconds to start the match!';
   
   requestAnimationFrame(loop);
 }
