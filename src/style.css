@@ -382,6 +382,14 @@ body {
   border-color: #ffd84d;
 }
 
+.flat-btn:disabled {
+  background: #222222;
+  border-color: #ffc904;
+  color: #ffc904;
+  cursor: default;
+  opacity: 0.9;
+}
+
 .flat-btn.cyan-btn {
   background: #00e5ff;
   border-color: #00e5ff;

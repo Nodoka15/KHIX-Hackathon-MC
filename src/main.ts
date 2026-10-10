@@ -8,7 +8,8 @@ import {
   SwordPose,
   SliceEventPayload,
   ScoreSyncPayload,
-  MatchOverPayload
+  MatchOverPayload,
+  PeerSyncState
 } from './multiplayer';
 
 const video = document.getElementById('webcam') as HTMLVideoElement;
@@ -62,8 +63,70 @@ let lastFrameTime = performance.now();
 let countdownTargetPerfTime = 0;
 let lastScoreSyncTime = 0;
 
+// Multiplayer Match & Mutual Rematch State
+let currentMatchId = 1;
+let lastMatchOverPayload: MatchOverPayload | null = null;
+let localRematchReady = false;
+let remoteRematchReady = false;
+
 function clearModalOutcomeClasses(): void {
   modalScreen.classList.remove('winner-modal', 'loser-modal', 'draw-modal');
+  actionBtn.disabled = false;
+}
+
+function applyRemoteMatchOver(payload: MatchOverPayload): void {
+  if (game.mode !== 'MULTIPLAYER' || game.state === 'GAMEOVER') return;
+  if (multiplayer.role === 'host') {
+    game.score = payload.hostScore;
+    game.lives = payload.hostLives;
+    game.opponentScore = payload.guestScore;
+    game.opponentLives = payload.guestLives;
+  } else {
+    game.score = payload.guestScore;
+    game.lives = payload.guestLives;
+    game.opponentScore = payload.hostScore;
+    game.opponentLives = payload.hostLives;
+  }
+  lastMatchOverPayload = payload;
+  updateHUD();
+  showMultiplayerGameOver(payload.winner, payload.reason);
+}
+
+function handleRemoteRematchVote(matchId: number): void {
+  if (game.mode !== 'MULTIPLAYER' || game.state !== 'GAMEOVER') return;
+  if (matchId > 0 && matchId < currentMatchId) return;
+  if (remoteRematchReady) return;
+
+  remoteRematchReady = true;
+
+  if (localRematchReady && remoteRematchReady) {
+    const nextId = currentMatchId + 1;
+    multiplayer.sendRematchStart(nextId, 3000);
+    beginMultiplayerCountdown(3000, nextId);
+  } else {
+    modalBadge.textContent = '⚔️ RIVAL WANTS A REMATCH (1/2 READY)!';
+    actionBtn.textContent = 'ACCEPT REMATCH (1/2 READY)';
+    actionBtn.disabled = false;
+  }
+}
+
+function triggerLocalRematchVote(): void {
+  if (game.mode !== 'MULTIPLAYER' || game.state !== 'GAMEOVER' || !multiplayer.inRoom) return;
+  if (localRematchReady) return;
+
+  localRematchReady = true;
+  game.gestureProgress = 0;
+  multiplayer.sendRematchVote(currentMatchId);
+
+  if (localRematchReady && remoteRematchReady) {
+    const nextId = currentMatchId + 1;
+    multiplayer.sendRematchStart(nextId, 3000);
+    beginMultiplayerCountdown(3000, nextId);
+  } else {
+    modalBadge.textContent = '⏳ REMATCH REQUESTED (1/2 READY) • WAITING FOR RIVAL';
+    actionBtn.textContent = 'WAITING FOR RIVAL (1/2)...';
+    actionBtn.disabled = true;
+  }
 }
 
 // Setup Multiplayer Client & Callbacks
@@ -72,6 +135,9 @@ const multiplayer = new MultiplayerClient({
     game.state = 'SEARCHING';
     game.resetArena();
     countdownBanner.style.display = 'none';
+    lastMatchOverPayload = null;
+    localRematchReady = false;
+    remoteRematchReady = false;
     clearModalOutcomeClasses();
 
     modalBadge.textContent = 'LIVE ARENA QUEUE';
@@ -87,13 +153,17 @@ const multiplayer = new MultiplayerClient({
   },
 
   onMatchFound: (_role: PlayerRole, countdownMs: number) => {
-    beginMultiplayerCountdown(countdownMs);
+    currentMatchId = 1;
+    beginMultiplayerCountdown(countdownMs, 1);
   },
 
   onPeerLeft: () => {
     game.state = 'SEARCHING';
     game.resetArena();
     countdownBanner.style.display = 'none';
+    lastMatchOverPayload = null;
+    localRematchReady = false;
+    remoteRematchReady = false;
     clearModalOutcomeClasses();
 
     modalBadge.textContent = 'OPPONENT DISCONNECTED';
@@ -119,7 +189,7 @@ const multiplayer = new MultiplayerClient({
   },
 
   onSliceTarget: (payload: SliceEventPayload) => {
-    if (game.mode !== 'MULTIPLAYER') return;
+    if (game.mode !== 'MULTIPLAYER' || game.state === 'GAMEOVER') return;
     game.applyRemoteSlice(
       payload.targetId,
       payload.cutAngle,
@@ -143,8 +213,7 @@ const multiplayer = new MultiplayerClient({
         countdownBanner.style.display = 'none';
         game.start();
       }
-      game.score = payload.guestScore;
-      game.lives = payload.guestLives;
+      // Only update host's score/lives/timer/targets; guest is authoritative for guest's own score and lives
       game.opponentScore = payload.hostScore;
       game.opponentLives = payload.hostLives;
       game.matchTimeRemaining = payload.timeRemainingMs / 1000;
@@ -157,25 +226,47 @@ const multiplayer = new MultiplayerClient({
   },
 
   onMatchOver: (payload: MatchOverPayload) => {
-    if (game.mode !== 'MULTIPLAYER') return;
-    if (multiplayer.role === 'host') {
-      game.score = payload.hostScore;
-      game.lives = payload.hostLives;
-      game.opponentScore = payload.guestScore;
-      game.opponentLives = payload.guestLives;
-    } else {
-      game.score = payload.guestScore;
-      game.lives = payload.guestLives;
-      game.opponentScore = payload.hostScore;
-      game.opponentLives = payload.hostLives;
-    }
-    updateHUD();
-    showMultiplayerGameOver(payload.winner, payload.reason);
+    applyRemoteMatchOver(payload);
   },
 
-  onRematchStart: (countdownMs: number) => {
+  onPeerSyncState: (sync: PeerSyncState) => {
     if (game.mode !== 'MULTIPLAYER') return;
-    beginMultiplayerCountdown(countdownMs);
+
+    if (game.state === 'PLAYING' && sync.matchId === currentMatchId) {
+      const changed = game.opponentScore !== sync.score || game.opponentLives !== sync.lives;
+      game.opponentScore = sync.score;
+      game.opponentLives = sync.lives;
+      if (changed) {
+        updateHUD();
+      }
+      if (sync.matchOver) {
+        applyRemoteMatchOver(sync.matchOver);
+        return;
+      }
+      if (game.opponentLives <= 0 || game.lives <= 0) {
+        checkMultiplayerKnockout();
+      }
+    } else if (game.state === 'GAMEOVER') {
+      if (sync.matchId === currentMatchId && sync.rematchReady && !remoteRematchReady) {
+        handleRemoteRematchVote(sync.matchId);
+      } else if (sync.matchId > currentMatchId && localRematchReady) {
+        beginMultiplayerCountdown(3000, sync.matchId);
+      }
+    }
+  },
+
+  onRematchVote: (matchId: number) => {
+    handleRemoteRematchVote(matchId);
+  },
+
+  onRematchStart: (nextMatchId: number, countdownMs: number) => {
+    if (game.mode !== 'MULTIPLAYER' || game.state !== 'GAMEOVER') return;
+    if (!localRematchReady) {
+      handleRemoteRematchVote(currentMatchId);
+      return;
+    }
+    const targetMatchId = nextMatchId > currentMatchId ? nextMatchId : currentMatchId + 1;
+    beginMultiplayerCountdown(countdownMs, targetMatchId);
   }
 });
 
@@ -212,7 +303,14 @@ async function bootstrapCamera(): Promise<void> {
   await new Promise(res => (video.onloadedmetadata = res));
 }
 
-function beginMultiplayerCountdown(countdownOrEpochMs: number): void {
+function beginMultiplayerCountdown(countdownOrEpochMs: number, nextMatchId?: number): void {
+  if (typeof nextMatchId === 'number' && nextMatchId > 0) {
+    currentMatchId = nextMatchId;
+  }
+  lastMatchOverPayload = null;
+  localRematchReady = false;
+  remoteRematchReady = false;
+
   const delayMs =
     countdownOrEpochMs <= 15000
       ? Math.max(800, countdownOrEpochMs)
@@ -320,6 +418,7 @@ function checkMultiplayerKnockout(): void {
       guestLives
     };
 
+    lastMatchOverPayload = payload;
     multiplayer.sendMatchOver(payload);
     showMultiplayerGameOver(winner, 'knockout');
   }
@@ -356,6 +455,7 @@ function handleMultiplayerTimeUp(): void {
     guestLives
   };
 
+  lastMatchOverPayload = payload;
   multiplayer.sendMatchOver(payload);
   showMultiplayerGameOver(winner, 'timeout');
 }
@@ -364,6 +464,8 @@ function showMultiplayerGameOver(winner: PlayerRole | 'draw', reason: 'timeout' 
   if (game.state === 'GAMEOVER') return;
   game.state = 'GAMEOVER';
   countdownBanner.style.display = 'none';
+  localRematchReady = false;
+  remoteRematchReady = false;
   clearModalOutcomeClasses();
 
   const didWin = winner !== 'draw' && winner === multiplayer.role;
@@ -396,11 +498,12 @@ function showMultiplayerGameOver(winner: PlayerRole | 'draw', reason: 'timeout' 
           ? 'Time is up and you finished with the higher score!'
           : 'Time is up and your rival finished with the higher score!';
 
-  modalDesc.textContent = `${reasonText}  |  YOU: ${game.score} PTS (${game.lives} ❤️)  vs  RIVAL: ${game.opponentScore} PTS (${game.opponentLives} ❤️). Raise both hands or click REMATCH!`;
+  modalDesc.textContent = `${reasonText}  |  YOU: ${game.score} PTS (${game.lives} ❤️)  vs  RIVAL: ${game.opponentScore} PTS (${game.opponentLives} ❤️). Both players must click REMATCH (or raise both hands) to play again!`;
 
   menuOptions.style.display = 'none';
   modalActions.style.display = 'flex';
-  actionBtn.textContent = 'REMATCH';
+  actionBtn.textContent = 'REMATCH (0/2)';
+  actionBtn.disabled = false;
   actionBtn.style.display = 'inline-block';
   secondaryBtn.textContent = 'NEXT OPPONENT ⏭';
   secondaryBtn.style.display = 'inline-block';
@@ -415,6 +518,9 @@ function showMainMenu(): void {
   game.score = 0;
   game.lives = 3;
   game.isNewHighScore = false;
+  lastMatchOverPayload = null;
+  localRematchReady = false;
+  remoteRematchReady = false;
   game.resetArena();
   clearModalOutcomeClasses();
   updateHUD();
@@ -442,6 +548,9 @@ function enterSingleplayer(): void {
   game.score = 0;
   game.lives = 3;
   game.isNewHighScore = false;
+  lastMatchOverPayload = null;
+  localRematchReady = false;
+  remoteRematchReady = false;
   game.resetArena();
   clearModalOutcomeClasses();
   updateHUD();
@@ -460,6 +569,7 @@ function enterSingleplayer(): void {
   menuOptions.style.display = 'none';
   modalActions.style.display = 'flex';
   actionBtn.textContent = 'START MATCH';
+  actionBtn.disabled = false;
   actionBtn.style.display = 'inline-block';
   secondaryBtn.style.display = 'none';
   backMenuBtn.style.display = 'inline-block';
@@ -474,6 +584,9 @@ function enterMultiplayer(): void {
   game.opponentScore = 0;
   game.opponentLives = 3;
   game.matchTimeRemaining = game.matchDurationSec;
+  lastMatchOverPayload = null;
+  localRematchReady = false;
+  remoteRematchReady = false;
   game.resetArena();
   updateHUD();
 
@@ -502,8 +615,7 @@ actionBtn.addEventListener('click', () => {
     modalScreen.style.display = 'none';
     game.gestureProgress = 0;
   } else if (game.mode === 'MULTIPLAYER' && game.state === 'GAMEOVER') {
-    const startTime = multiplayer.sendRematchRequest();
-    beginMultiplayerCountdown(startTime);
+    triggerLocalRematchVote();
   }
 });
 
@@ -608,10 +720,10 @@ function loop(now: number): void {
     }
   }
 
-  // 4. Hands-free Gesture Detection (Singleplayer Start/Restart & Multiplayer Rematch)
+  // 4. Hands-free Gesture Detection (Singleplayer Start/Restart & Multiplayer Rematch Vote)
   const canUseHandsGesture =
     (game.mode === 'SINGLEPLAYER' && (game.state === 'CALIBRATION' || game.state === 'GAMEOVER')) ||
-    (game.mode === 'MULTIPLAYER' && game.state === 'GAMEOVER' && multiplayer.inRoom);
+    (game.mode === 'MULTIPLAYER' && game.state === 'GAMEOVER' && multiplayer.inRoom && !localRematchReady);
 
   if (canUseHandsGesture) {
     if (checkTwoHandsRaised(visionData.hands)) {
@@ -623,8 +735,7 @@ function loop(now: number): void {
           updateHUD();
           modalScreen.style.display = 'none';
         } else if (game.mode === 'MULTIPLAYER') {
-          const startTime = multiplayer.sendRematchRequest();
-          beginMultiplayerCountdown(startTime);
+          triggerLocalRematchVote();
         }
       }
     } else {
@@ -715,7 +826,13 @@ function loop(now: number): void {
 
   // 6. Multiplayer Network Sync & Fluid Remote Sword Rendering
   if (game.mode === 'MULTIPLAYER') {
-    multiplayer.sendSwordState(currentLocalSwords, now);
+    multiplayer.sendSwordState(currentLocalSwords, now, {
+      matchId: currentMatchId,
+      score: game.score,
+      lives: game.lives,
+      matchOver: game.state === 'GAMEOVER' ? lastMatchOverPayload : null,
+      rematchReady: game.state === 'GAMEOVER' ? localRematchReady : false
+    });
 
     const remoteSwords = multiplayer.updateRemoteInterpolation(dt, now);
     for (const rTrail of multiplayer.remoteSlashTrails) {

@@ -51,15 +51,25 @@ export interface MatchOverPayload {
   guestLives: number;
 }
 
+export interface PeerSyncState {
+  matchId: number;
+  score: number;
+  lives: number;
+  matchOver: MatchOverPayload | null;
+  rematchReady: boolean;
+}
+
 export interface MultiplayerCallbacks {
   onSearching: () => void;
-  onMatchFound: (role: PlayerRole, matchStartTime: number) => void;
+  onMatchFound: (role: PlayerRole, countdownMs: number) => void;
   onPeerLeft: () => void;
   onSpawnTarget: (target: Target) => void;
   onSliceTarget: (payload: SliceEventPayload) => void;
   onScoreSync: (payload: ScoreSyncPayload) => void;
   onMatchOver: (payload: MatchOverPayload) => void;
-  onRematchStart: (matchStartTime: number) => void;
+  onPeerSyncState: (sync: PeerSyncState) => void;
+  onRematchVote: (matchId: number) => void;
+  onRematchStart: (nextMatchId: number, countdownMs: number) => void;
 }
 
 function lerpAngle(current: number, target: number, t: number): number {
@@ -73,27 +83,21 @@ function randomId(prefix = ''): string {
 }
 
 /**
- * Lightweight OASIS MQTT v3.1.1 over WebSockets client for zero-config
- * global cross-network matchmaking and real-time pub/sub relay.
+ * Single MQTT over WebSockets broker connection that always reconnects to its own URL
+ * so two players never drift onto separate brokers on reconnect.
  */
-class MqttWsClient {
+class MqttSingleBroker {
   private ws: WebSocket | null = null;
   private isConnected = false;
   private pingTimer: number | null = null;
   private reconnectTimer: number | null = null;
   private packetId = 1;
-  private subscriptions = new Set<string>();
   private rxBuffer: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
-  private brokerIndex = 0;
-
-  private readonly brokers = [
-    'wss://broker.emqx.io:8084/mqtt',
-    'wss://broker.hivemq.com:8884/mqtt',
-    'wss://test.mosquitto.org:8081/mqtt'
-  ];
 
   constructor(
+    private url: string,
     private clientId: string,
+    private subscriptions: Set<string>,
     private onMessage: (topic: string, payload: string) => void
   ) {}
 
@@ -103,9 +107,8 @@ class MqttWsClient {
     }
     this.cleanupSocket();
 
-    const url = this.brokers[this.brokerIndex % this.brokers.length];
     try {
-      const ws = new WebSocket(url, 'mqtt');
+      const ws = new WebSocket(this.url, 'mqtt');
       ws.binaryType = 'arraybuffer';
       this.ws = ws;
 
@@ -126,28 +129,27 @@ class MqttWsClient {
       ws.onclose = () => {
         this.isConnected = false;
         this.stopPing();
-        this.brokerIndex = (this.brokerIndex + 1) % this.brokers.length;
         if (this.reconnectTimer === null) {
           this.reconnectTimer = window.setTimeout(() => {
             this.reconnectTimer = null;
             this.connect();
-          }, 1200);
+          }, 900);
         }
       };
     } catch {
-      this.brokerIndex = (this.brokerIndex + 1) % this.brokers.length;
+      if (this.reconnectTimer === null) {
+        this.reconnectTimer = window.setTimeout(() => {
+          this.reconnectTimer = null;
+          this.connect();
+        }, 1200);
+      }
     }
   }
 
   public subscribe(topic: string): void {
-    this.subscriptions.add(topic);
     if (this.isConnected) {
       this.sendSubscribePacket(topic);
     }
-  }
-
-  public unsubscribe(topic: string): void {
-    this.subscriptions.delete(topic);
   }
 
   public publish(topic: string, text: string): boolean {
@@ -267,7 +269,7 @@ class MqttWsClient {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.ws.send(new Uint8Array([0xc0, 0x00])); // PINGREQ
       }
-    }, 20000);
+    }, 18000);
   }
 
   private stopPing(): void {
@@ -311,6 +313,55 @@ class MqttWsClient {
   }
 }
 
+/**
+ * Redundant multi-broker MQTT client that stays simultaneously connected to the
+ * primary and backup brokers so players never get split across different brokers.
+ */
+class MqttWsClient {
+  private subscriptions = new Set<string>();
+  private brokers: MqttSingleBroker[];
+
+  constructor(
+    clientId: string,
+    onMessage: (topic: string, payload: string) => void
+  ) {
+    const urls = [
+      'wss://broker.emqx.io:8084/mqtt',
+      'wss://broker.hivemq.com:8884/mqtt'
+    ];
+    this.brokers = urls.map(
+      (url, i) => new MqttSingleBroker(url, `${clientId}_${i}`, this.subscriptions, onMessage)
+    );
+  }
+
+  public connect(): void {
+    for (const b of this.brokers) {
+      b.connect();
+    }
+  }
+
+  public subscribe(topic: string): void {
+    this.subscriptions.add(topic);
+    for (const b of this.brokers) {
+      b.subscribe(topic);
+    }
+  }
+
+  public unsubscribe(topic: string): void {
+    this.subscriptions.delete(topic);
+  }
+
+  public publish(topic: string, text: string): boolean {
+    let anySent = false;
+    for (const b of this.brokers) {
+      if (b.publish(topic, text)) {
+        anySent = true;
+      }
+    }
+    return anySent;
+  }
+}
+
 const TOPIC_PREFIX = 'vegi-knights-ucf-v2';
 const MATCHMAKING_TOPIC = `${TOPIC_PREFIX}/matchmaking`;
 
@@ -348,7 +399,7 @@ export class MultiplayerClient {
   private lastSwordSendTime = 0;
 
   constructor(private callbacks: MultiplayerCallbacks) {
-    // 1. Global Cross-Network Cloud Broker (MQTT over WSS)
+    // 1. Global Cross-Network Cloud Brokers (MQTT over WSS)
     this.mqtt = new MqttWsClient(this.clientId, (topic, payload) => {
       this.onTransportPayload(topic, payload);
     });
@@ -392,7 +443,7 @@ export class MultiplayerClient {
     if (this.seenMsgIds.has(msgId)) return false;
     this.seenMsgIds.add(msgId);
     this.seenMsgQueue.push(msgId);
-    if (this.seenMsgQueue.length > 600) {
+    if (this.seenMsgQueue.length > 800) {
       const oldest = this.seenMsgQueue.shift();
       if (oldest) this.seenMsgIds.delete(oldest);
     }
@@ -435,10 +486,11 @@ export class MultiplayerClient {
     };
     const serialized = JSON.stringify(envelope);
 
-    // Send directly to partner's already-subscribed personal inbox so zero packets are lost to room subscribe latency
+    // Send directly to partner's already-subscribed personal inbox AND room topic
     if (this.partnerId) {
       this.publishRawToTopic(`${TOPIC_PREFIX}/inbox/${this.partnerId}`, serialized);
-    } else if (this.currentRoomId) {
+    }
+    if (this.currentRoomId) {
       this.publishRawToTopic(`${TOPIC_PREFIX}/room/${this.currentRoomId}`, serialized);
     }
   }
@@ -450,9 +502,16 @@ export class MultiplayerClient {
       _sid: this.clientId,
       _mid: mid
     };
+    const serialized = JSON.stringify(envelope);
+
     if (this.reliableChannel && this.reliableChannel.readyState === 'open') {
       try {
-        this.reliableChannel.send(JSON.stringify(envelope));
+        this.reliableChannel.send(serialized);
+      } catch {}
+    }
+    if (this.fastChannel && this.fastChannel.readyState === 'open') {
+      try {
+        this.fastChannel.send(serialized);
       } catch {}
     }
     this.publishToRoom(data, mid);
@@ -471,7 +530,8 @@ export class MultiplayerClient {
 
     if (!senderId || senderId === this.clientId) return;
 
-    if (msgId && !this.markMessageSeen(msgId)) {
+    // Allow sword_state through without _mid dedup overhead, deduplicate all other messages
+    if (msg.type !== 'sword_state' && msgId && !this.markMessageSeen(msgId)) {
       return;
     }
 
@@ -657,6 +717,9 @@ export class MultiplayerClient {
 
       case 'sword_state': {
         this.receiveRemoteSwords((msg.swords as SwordPose[]) || []);
+        if (msg.sync) {
+          this.callbacks.onPeerSyncState(msg.sync as PeerSyncState);
+        }
         break;
       }
 
@@ -688,9 +751,16 @@ export class MultiplayerClient {
         break;
       }
 
-      case 'rematch_ready': {
+      case 'rematch_vote': {
+        const matchId = typeof msg.matchId === 'number' ? msg.matchId : 0;
+        this.callbacks.onRematchVote(matchId);
+        break;
+      }
+
+      case 'rematch_start': {
+        const nextMatchId = typeof msg.nextMatchId === 'number' ? msg.nextMatchId : 0;
         const countdownMs = (msg.countdownMs as number) || 3000;
-        this.callbacks.onRematchStart(countdownMs);
+        this.callbacks.onRematchStart(nextMatchId, countdownMs);
         break;
       }
     }
@@ -794,6 +864,9 @@ export class MultiplayerClient {
         const msg = JSON.parse(event.data as string) as Record<string, unknown>;
         if (msg.type === 'sword_state') {
           this.receiveRemoteSwords((msg.swords as SwordPose[]) || []);
+          if (msg.sync) {
+            this.callbacks.onPeerSyncState(msg.sync as PeerSyncState);
+          }
           return;
         }
         const msgId = msg._mid as string | undefined;
@@ -833,11 +906,11 @@ export class MultiplayerClient {
     }
   }
 
-  public sendSwordState(swords: SwordPose[], now: number): void {
+  public sendSwordState(swords: SwordPose[], now: number, sync: PeerSyncState): void {
     if (!this.inRoom) return;
 
     const p2pOpen = Boolean(this.fastChannel && this.fastChannel.readyState === 'open');
-    // 60Hz (16ms) over direct P2P WebRTC DataChannel; 22Hz (45ms) fallback over MQTT so broker never rate-limits
+    // 60Hz (16ms) over direct P2P WebRTC DataChannel; 22Hz (45ms) fallback over MQTT
     const minInterval = p2pOpen ? 16 : 45;
     if (now - this.lastSwordSendTime < minInterval) return;
     this.lastSwordSendTime = now;
@@ -848,7 +921,7 @@ export class MultiplayerClient {
       angle: Math.round(s.angle * 1000) / 1000
     }));
 
-    const packet = { type: 'sword_state', swords: compactSwords };
+    const packet = { type: 'sword_state', swords: compactSwords, sync };
     if (p2pOpen && this.fastChannel) {
       try {
         this.fastChannel.send(JSON.stringify(packet));
@@ -884,18 +957,35 @@ export class MultiplayerClient {
   public sendMatchOver(payload: MatchOverPayload): void {
     if (!this.inRoom) return;
     this.sendReliableEvent({ type: 'match_over', payload });
-    // Send a backup confirmation after 180ms so neither player ever misses match termination
+    for (const delay of [150, 400, 900]) {
+      window.setTimeout(() => {
+        if (this.inRoom) {
+          this.sendReliableEvent({ type: 'match_over', payload });
+        }
+      }, delay);
+    }
+  }
+
+  public sendRematchVote(matchId: number): void {
+    if (!this.inRoom) return;
+    this.sendReliableEvent({ type: 'rematch_vote', matchId });
     window.setTimeout(() => {
       if (this.inRoom) {
-        this.sendReliableEvent({ type: 'match_over', payload });
+        this.sendReliableEvent({ type: 'rematch_vote', matchId });
       }
     }, 180);
   }
 
-  public sendRematchRequest(): number {
-    const countdownMs = 3000;
-    this.sendReliableEvent({ type: 'rematch_ready', countdownMs });
-    return countdownMs;
+  public sendRematchStart(nextMatchId: number, countdownMs = 3000): void {
+    if (!this.inRoom) return;
+    this.sendReliableEvent({ type: 'rematch_start', nextMatchId, countdownMs });
+    for (const delay of [150, 380]) {
+      window.setTimeout(() => {
+        if (this.inRoom) {
+          this.sendReliableEvent({ type: 'rematch_start', nextMatchId, countdownMs });
+        }
+      }, delay);
+    }
   }
 
   private receiveRemoteSwords(swords: SwordPose[]): void {
