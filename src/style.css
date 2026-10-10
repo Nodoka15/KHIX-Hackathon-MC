@@ -405,7 +405,8 @@ body {
   background: #080808;
 }
 
-#remote-webcam {
+#remote-webcam,
+#remote-webcam-fallback {
   width: 100%;
   height: 100%;
   object-fit: cover;

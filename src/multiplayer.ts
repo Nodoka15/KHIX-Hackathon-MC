@@ -51,6 +51,7 @@ export interface MultiplayerCallbacks {
   onMatchFound: (role: PlayerRole, matchStartTime: number) => void;
   onPeerLeft: () => void;
   onRemoteStream: (stream: MediaStream) => void;
+  onRemoteFallbackFrame?: (dataUrl: string) => void;
   onSpawnTarget: (target: Target) => void;
   onSliceTarget: (payload: SliceEventPayload) => void;
   onScoreSync: (payload: ScoreSyncPayload) => void;
@@ -64,10 +65,268 @@ function lerpAngle(current: number, target: number, t: number): number {
   return current + diff * t;
 }
 
-export class MultiplayerClient {
+function randomId(prefix = ''): string {
+  return prefix + Math.random().toString(36).substring(2, 10) + Math.random().toString(36).substring(2, 6);
+}
+
+/**
+ * Lightweight OASIS MQTT v3.1.1 over WebSockets client for zero-config
+ * global cross-network matchmaking and real-time pub/sub relay.
+ */
+class MqttWsClient {
   private ws: WebSocket | null = null;
+  private isConnected = false;
+  private pingTimer: number | null = null;
+  private reconnectTimer: number | null = null;
+  private packetId = 1;
+  private subscriptions = new Set<string>();
+  private rxBuffer: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
+  private brokerIndex = 0;
+
+  private readonly brokers = [
+    'wss://broker.emqx.io:8084/mqtt',
+    'wss://broker.hivemq.com:8884/mqtt',
+    'wss://test.mosquitto.org:8081/mqtt'
+  ];
+
+  constructor(
+    private clientId: string,
+    private onMessage: (topic: string, payload: string) => void
+  ) {}
+
+  public connect(): void {
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+    this.cleanupSocket();
+
+    const url = this.brokers[this.brokerIndex % this.brokers.length];
+    try {
+      const ws = new WebSocket(url, 'mqtt');
+      ws.binaryType = 'arraybuffer';
+      this.ws = ws;
+
+      ws.onopen = () => {
+        this.sendConnectPacket();
+      };
+
+      ws.onmessage = (event: MessageEvent) => {
+        if (event.data instanceof ArrayBuffer) {
+          this.handleBinaryChunk(new Uint8Array(event.data));
+        }
+      };
+
+      ws.onerror = () => {
+        // Handled in onclose
+      };
+
+      ws.onclose = () => {
+        this.isConnected = false;
+        this.stopPing();
+        this.brokerIndex = (this.brokerIndex + 1) % this.brokers.length;
+        if (this.reconnectTimer === null) {
+          this.reconnectTimer = window.setTimeout(() => {
+            this.reconnectTimer = null;
+            this.connect();
+          }, 1200);
+        }
+      };
+    } catch {
+      this.brokerIndex = (this.brokerIndex + 1) % this.brokers.length;
+    }
+  }
+
+  public subscribe(topic: string): void {
+    this.subscriptions.add(topic);
+    if (this.isConnected) {
+      this.sendSubscribePacket(topic);
+    }
+  }
+
+  public unsubscribe(topic: string): void {
+    this.subscriptions.delete(topic);
+  }
+
+  public publish(topic: string, text: string): boolean {
+    if (!this.isConnected || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+    try {
+      const topicBytes = this.encodeMqttString(topic);
+      const payloadBytes = new TextEncoder().encode(text);
+      const remLen = this.encodeVarLen(topicBytes.length + payloadBytes.length);
+
+      const frame = new Uint8Array(1 + remLen.length + topicBytes.length + payloadBytes.length);
+      frame[0] = 0x30; // PUBLISH QoS 0
+      frame.set(remLen, 1);
+      frame.set(topicBytes, 1 + remLen.length);
+      frame.set(payloadBytes, 1 + remLen.length + topicBytes.length);
+
+      this.ws.send(frame);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private sendConnectPacket(): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    // Variable Header: Protocol Name "MQTT" (00 04 4d 51 54 54), Level 4 (04), CleanSession (02), KeepAlive 45s (00 2d)
+    const varHeader = new Uint8Array([0x00, 0x04, 0x4d, 0x51, 0x54, 0x54, 0x04, 0x02, 0x00, 0x2d]);
+    const payload = this.encodeMqttString(this.clientId);
+    const remLen = this.encodeVarLen(varHeader.length + payload.length);
+
+    const pkt = new Uint8Array(1 + remLen.length + varHeader.length + payload.length);
+    pkt[0] = 0x10; // CONNECT
+    pkt.set(remLen, 1);
+    pkt.set(varHeader, 1 + remLen.length);
+    pkt.set(payload, 1 + remLen.length + varHeader.length);
+    this.ws.send(pkt);
+  }
+
+  private sendSubscribePacket(topic: string): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    const id = (this.packetId++ & 0x7fff) || 1;
+    const topicBytes = this.encodeMqttString(topic);
+    const remLen = this.encodeVarLen(2 + topicBytes.length + 1);
+
+    const pkt = new Uint8Array(1 + remLen.length + 2 + topicBytes.length + 1);
+    let offset = 0;
+    pkt[offset++] = 0x82; // SUBSCRIBE
+    pkt.set(remLen, offset);
+    offset += remLen.length;
+    pkt[offset++] = (id >> 8) & 0xff;
+    pkt[offset++] = id & 0xff;
+    pkt.set(topicBytes, offset);
+    offset += topicBytes.length;
+    pkt[offset] = 0x00; // QoS 0
+    this.ws.send(pkt);
+  }
+
+  private handleBinaryChunk(chunk: Uint8Array): void {
+    if (this.rxBuffer.length === 0) {
+      this.rxBuffer = chunk;
+    } else {
+      const merged = new Uint8Array(this.rxBuffer.length + chunk.length);
+      merged.set(this.rxBuffer, 0);
+      merged.set(chunk, this.rxBuffer.length);
+      this.rxBuffer = merged;
+    }
+
+    while (this.rxBuffer.length >= 2) {
+      const firstByte = this.rxBuffer[0];
+      const pktType = firstByte & 0xf0;
+
+      // Decode variable remaining length
+      let multiplier = 1;
+      let remLength = 0;
+      let offset = 1;
+      let encodedByte = 0;
+      do {
+        if (offset >= this.rxBuffer.length) {
+          return; // Wait for more bytes
+        }
+        encodedByte = this.rxBuffer[offset++];
+        remLength += (encodedByte & 127) * multiplier;
+        multiplier *= 128;
+      } while ((encodedByte & 128) !== 0);
+
+      const packetEnd = offset + remLength;
+      if (this.rxBuffer.length < packetEnd) {
+        return; // Incomplete packet, wait for next chunk
+      }
+
+      if (pktType === 0x20) {
+        // CONNACK
+        this.isConnected = true;
+        this.startPing();
+        for (const sub of this.subscriptions) {
+          this.sendSubscribePacket(sub);
+        }
+      } else if (pktType === 0x30) {
+        // PUBLISH
+        const topicLen = (this.rxBuffer[offset] << 8) | this.rxBuffer[offset + 1];
+        let payloadOffset = offset + 2 + topicLen;
+        const qos = (firstByte >> 1) & 0x03;
+        if (qos > 0) {
+          payloadOffset += 2;
+        }
+        if (payloadOffset <= packetEnd) {
+          const topic = new TextDecoder().decode(this.rxBuffer.subarray(offset + 2, offset + 2 + topicLen));
+          const text = new TextDecoder().decode(this.rxBuffer.subarray(payloadOffset, packetEnd));
+          this.onMessage(topic, text);
+        }
+      }
+
+      this.rxBuffer = this.rxBuffer.subarray(packetEnd);
+    }
+  }
+
+  private startPing(): void {
+    this.stopPing();
+    this.pingTimer = window.setInterval(() => {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send(new Uint8Array([0xc0, 0x00])); // PINGREQ
+      }
+    }, 20000);
+  }
+
+  private stopPing(): void {
+    if (this.pingTimer !== null) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
+  }
+
+  private cleanupSocket(): void {
+    this.stopPing();
+    this.isConnected = false;
+    this.rxBuffer = new Uint8Array(0);
+    if (this.ws) {
+      try {
+        this.ws.onclose = null;
+        this.ws.close();
+      } catch {}
+      this.ws = null;
+    }
+  }
+
+  private encodeVarLen(len: number): number[] {
+    const out: number[] = [];
+    do {
+      let byte = len % 128;
+      len = Math.floor(len / 128);
+      if (len > 0) byte |= 128;
+      out.push(byte);
+    } while (len > 0);
+    return out;
+  }
+
+  private encodeMqttString(str: string): Uint8Array {
+    const utf8 = new TextEncoder().encode(str);
+    const out = new Uint8Array(2 + utf8.length);
+    out[0] = (utf8.length >> 8) & 0xff;
+    out[1] = utf8.length & 0xff;
+    out.set(utf8, 2);
+    return out;
+  }
+}
+
+const TOPIC_PREFIX = 'vegi-knights-ucf-v2';
+const MATCHMAKING_TOPIC = `${TOPIC_PREFIX}/matchmaking`;
+
+export class MultiplayerClient {
+  private clientId = randomId('vk_');
+  private mqtt: MqttWsClient;
+  private localWs: WebSocket | null = null;
+  private broadcastChannel: BroadcastChannel | null = null;
+
   private pc: RTCPeerConnection | null = null;
   private fastChannel: RTCDataChannel | null = null;
+  private remoteDescSet = false;
+  private pendingCandidates: RTCIceCandidateInit[] = [];
+  private webrtcMediaConnected = false;
+
   private localStream: MediaStream | null = null;
   private remoteStream: MediaStream | null = null;
 
@@ -76,6 +335,19 @@ export class MultiplayerClient {
   public isSearching = false;
   public isMicMuted = false;
 
+  private currentRoomId: string | null = null;
+  private partnerId: string | null = null;
+  private lastPartnerId: string | null = null;
+  private lastSkipTime = 0;
+
+  private seekTimer: number | null = null;
+  private fallbackFrameTimer: number | null = null;
+  private fallbackCanvas: HTMLCanvasElement | null = null;
+  private fallbackCtx: CanvasRenderingContext2D | null = null;
+
+  private seenMsgIds = new Set<string>();
+  private seenMsgQueue: string[] = [];
+
   // Smoothly interpolated opponent swords (up to 2 hands)
   public remoteSwords: InterpolatedSword[] = [];
   public remoteSlashTrail: { x: number; y: number; age: number }[] = [];
@@ -83,6 +355,7 @@ export class MultiplayerClient {
   // Voice activity levels (0 to 1)
   public localVoiceLevel = 0;
   public remoteVoiceLevel = 0;
+  private remoteFallbackVoiceLevel = 0;
 
   private audioCtx: AudioContext | null = null;
   private localAnalyser: AnalyserNode | null = null;
@@ -90,7 +363,24 @@ export class MultiplayerClient {
   private voiceDataArray = new Uint8Array(64);
   private lastSwordSendTime = 0;
 
-  constructor(private callbacks: MultiplayerCallbacks) {}
+  constructor(private callbacks: MultiplayerCallbacks) {
+    // 1. Global Cross-Network Cloud Broker (MQTT over WSS)
+    this.mqtt = new MqttWsClient(this.clientId, (topic, payload) => {
+      this.onTransportPayload(topic, payload);
+    });
+
+    // 2. Same-Browser BroadcastChannel Fallback
+    if (typeof BroadcastChannel !== 'undefined') {
+      try {
+        this.broadcastChannel = new BroadcastChannel(TOPIC_PREFIX);
+        this.broadcastChannel.onmessage = (ev: MessageEvent) => {
+          if (ev.data && typeof ev.data.topic === 'string' && typeof ev.data.payload === 'string') {
+            this.onTransportPayload(ev.data.topic, ev.data.payload);
+          }
+        };
+      } catch {}
+    }
+  }
 
   public setLocalStream(stream: MediaStream): void {
     this.localStream = stream;
@@ -109,7 +399,8 @@ export class MultiplayerClient {
 
   private ensureAudioContext(): AudioContext | null {
     if (!this.audioCtx) {
-      const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const AudioContextClass =
+        window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       if (AudioContextClass) {
         this.audioCtx = new AudioContextClass();
       }
@@ -131,9 +422,7 @@ export class MultiplayerClient {
       analyser.smoothingTimeConstant = 0.6;
       source.connect(analyser);
       this.localAnalyser = analyser;
-    } catch {
-      // Ignore audio analyser failures
-    }
+    } catch {}
   }
 
   private setupRemoteAudioAnalyser(stream: MediaStream): void {
@@ -147,9 +436,7 @@ export class MultiplayerClient {
       analyser.smoothingTimeConstant = 0.6;
       source.connect(analyser);
       this.remoteAnalyser = analyser;
-    } catch {
-      // Ignore audio analyser failures
-    }
+    } catch {}
   }
 
   public updateVoiceLevels(): void {
@@ -164,117 +451,231 @@ export class MultiplayerClient {
       this.localVoiceLevel = 0;
     }
 
-    if (this.remoteAnalyser && this.inRoom) {
+    if (this.remoteAnalyser && this.inRoom && this.webrtcMediaConnected) {
       this.remoteAnalyser.getByteFrequencyData(this.voiceDataArray);
       let sum = 0;
       for (let i = 0; i < this.voiceDataArray.length; i++) {
         sum += this.voiceDataArray[i];
       }
       this.remoteVoiceLevel = Math.min(1, sum / (this.voiceDataArray.length * 95));
+    } else if (this.inRoom) {
+      this.remoteVoiceLevel = this.remoteFallbackVoiceLevel;
+      this.remoteFallbackVoiceLevel *= 0.88;
     } else {
       this.remoteVoiceLevel = 0;
     }
   }
 
-  public connectAndFindMatch(): void {
-    this.ensureAudioContext();
-    this.isSearching = true;
-    this.inRoom = false;
-    this.remoteSwords = [];
-    this.remoteSlashTrail = [];
+  private ensureTransportsConnected(): void {
+    this.mqtt.connect();
+    this.mqtt.subscribe(MATCHMAKING_TOPIC);
+    this.mqtt.subscribe(`${TOPIC_PREFIX}/inbox/${this.clientId}`);
 
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.sendSignal({ type: 'find_match' });
+    if (!this.localWs || this.localWs.readyState === WebSocket.CLOSED || this.localWs.readyState === WebSocket.CLOSING) {
+      try {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(`${protocol}//${window.location.host}/ws-multiplayer`);
+        this.localWs = ws;
+        ws.onmessage = (event: MessageEvent) => {
+          try {
+            const parsed = JSON.parse(event.data as string);
+            if (parsed.type === 'pubsub' && typeof parsed.topic === 'string' && typeof parsed.payload === 'string') {
+              this.onTransportPayload(parsed.topic, parsed.payload);
+            }
+          } catch {}
+        };
+      } catch {}
+    }
+  }
+
+  private publishToTopic(topic: string, data: Record<string, unknown>): void {
+    const envelope = {
+      ...data,
+      _sid: this.clientId,
+      _mid: randomId('m_')
+    };
+    const serialized = JSON.stringify(envelope);
+
+    // Send over global MQTT broker
+    this.mqtt.publish(topic, serialized);
+
+    // Send over local server bridge if available
+    if (this.localWs && this.localWs.readyState === WebSocket.OPEN) {
+      try {
+        this.localWs.send(JSON.stringify({ type: 'pubsub', topic, payload: serialized }));
+      } catch {}
+    }
+
+    // Send over same-browser BroadcastChannel if available
+    if (this.broadcastChannel) {
+      try {
+        this.broadcastChannel.postMessage({ topic, payload: serialized });
+      } catch {}
+    }
+  }
+
+  private publishToRoom(data: Record<string, unknown>): void {
+    if (!this.currentRoomId) return;
+    this.publishToTopic(`${TOPIC_PREFIX}/room/${this.currentRoomId}`, data);
+  }
+
+  private onTransportPayload(topic: string, rawPayload: string): void {
+    let msg: Record<string, unknown>;
+    try {
+      msg = JSON.parse(rawPayload);
+    } catch {
       return;
     }
 
-    if (this.ws) {
-      this.ws.close();
+    const senderId = msg._sid as string | undefined;
+    const msgId = msg._mid as string | undefined;
+
+    if (!senderId || senderId === this.clientId) return;
+
+    // Deduplicate across multi-path transports
+    if (msgId) {
+      if (this.seenMsgIds.has(msgId)) return;
+      this.seenMsgIds.add(msgId);
+      this.seenMsgQueue.push(msgId);
+      if (this.seenMsgQueue.length > 600) {
+        const oldest = this.seenMsgQueue.shift();
+        if (oldest) this.seenMsgIds.delete(oldest);
+      }
     }
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws-multiplayer`;
-    this.ws = new WebSocket(wsUrl);
+    const isInbox = topic === `${TOPIC_PREFIX}/inbox/${this.clientId}`;
+    const isMatchmaking = topic === MATCHMAKING_TOPIC;
+    const isCurrentRoom = this.currentRoomId !== null && topic === `${TOPIC_PREFIX}/room/${this.currentRoomId}`;
 
-    this.ws.onopen = () => {
-      if (this.isSearching) {
-        this.sendSignal({ type: 'find_match' });
-      }
-    };
+    if (!isInbox && !isMatchmaking && !isCurrentRoom) return;
 
-    this.ws.onmessage = (event: MessageEvent) => {
-      try {
-        const msg = JSON.parse(event.data as string);
-        this.handleSignalMessage(msg);
-      } catch {
-        // Ignore malformed packets
-      }
-    };
+    this.handleProtocolMessage(senderId, msg);
+  }
 
-    this.ws.onclose = () => {
-      if (this.inRoom || this.isSearching) {
-        this.cleanupPeerConnection();
-      }
-    };
+  public connectAndFindMatch(): void {
+    this.ensureAudioContext();
+    this.notifyLeaveIfInRoom();
+    this.cleanupPeerConnection();
+
+    this.isSearching = true;
+    this.inRoom = false;
+    this.currentRoomId = null;
+    this.partnerId = null;
+    this.remoteSwords = [];
+    this.remoteSlashTrail = [];
+
+    this.ensureTransportsConnected();
+    this.callbacks.onSearching();
+    this.startMatchmakingBeacons();
   }
 
   public nextOpponent(): void {
-    this.cleanupPeerConnection();
-    this.isSearching = true;
-    this.inRoom = false;
-    this.remoteSwords = [];
-    this.remoteSlashTrail = [];
-    this.callbacks.onSearching();
-
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.sendSignal({ type: 'next_match' });
-    } else {
-      this.connectAndFindMatch();
-    }
+    this.lastSkipTime = Date.now();
+    this.connectAndFindMatch();
   }
 
   public disconnect(): void {
     this.isSearching = false;
+    this.stopMatchmakingBeacons();
+    this.notifyLeaveIfInRoom();
     this.inRoom = false;
+    this.currentRoomId = null;
+    this.partnerId = null;
     this.remoteSwords = [];
     this.remoteSlashTrail = [];
     this.cleanupPeerConnection();
+  }
 
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.sendSignal({ type: 'leave_match' });
+  private notifyLeaveIfInRoom(): void {
+    if (this.inRoom && this.currentRoomId) {
+      this.publishToRoom({ type: 'peer_left' });
+      this.lastPartnerId = this.partnerId;
+      this.mqtt.unsubscribe(`${TOPIC_PREFIX}/room/${this.currentRoomId}`);
     }
   }
 
-  private sendSignal(data: Record<string, unknown>): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(data));
+  private startMatchmakingBeacons(): void {
+    this.stopMatchmakingBeacons();
+    const broadcastSeek = () => {
+      if (!this.isSearching || this.inRoom) return;
+      this.publishToTopic(MATCHMAKING_TOPIC, {
+        type: 'seek_match',
+        ts: Date.now()
+      });
+    };
+    broadcastSeek();
+    this.seekTimer = window.setInterval(broadcastSeek, 600);
+  }
+
+  private stopMatchmakingBeacons(): void {
+    if (this.seekTimer !== null) {
+      clearInterval(this.seekTimer);
+      this.seekTimer = null;
     }
   }
 
-  private async handleSignalMessage(msg: Record<string, unknown>): Promise<void> {
+  private async handleProtocolMessage(senderId: string, msg: Record<string, unknown>): Promise<void> {
     switch (msg.type) {
-      case 'searching': {
-        this.isSearching = true;
-        this.inRoom = false;
-        this.callbacks.onSearching();
+      case 'seek_match': {
+        if (!this.isSearching || this.inRoom) return;
+
+        // If we just skipped this exact partner < 3.5s ago, wait briefly to prefer other players
+        if (senderId === this.lastPartnerId && Date.now() - this.lastSkipTime < 3500) {
+          return;
+        }
+
+        // Deterministic coordinator: lower clientId sends proposal, or we send proposal if we also match
+        if (this.clientId < senderId) {
+          const roomId = randomId('room_');
+          this.publishToTopic(`${TOPIC_PREFIX}/inbox/${senderId}`, {
+            type: 'match_proposal',
+            roomId,
+            hostId: this.clientId,
+            guestId: senderId
+          });
+        }
         break;
       }
 
-      case 'match_found': {
-        this.isSearching = false;
-        this.inRoom = true;
-        this.role = (msg.role as PlayerRole) || 'host';
-        this.remoteSwords = [];
-        this.remoteSlashTrail = [];
+      case 'match_proposal': {
+        if (!this.isSearching || this.inRoom) return;
+        const roomId = msg.roomId as string;
+        const hostId = msg.hostId as string;
+        if (!roomId || !hostId) return;
 
-        const matchStartTime = (msg.matchStartTime as number) || Date.now() + 3000;
-        await this.setupPeerConnection(this.role === 'host');
-        this.callbacks.onMatchFound(this.role, matchStartTime);
+        const matchStartTime = Date.now() + 3200;
+        this.enterMatchedRoom(roomId, 'guest', hostId, matchStartTime);
+
+        this.publishToTopic(`${TOPIC_PREFIX}/inbox/${hostId}`, {
+          type: 'match_confirm',
+          roomId,
+          hostId,
+          guestId: this.clientId,
+          matchStartTime
+        });
+        break;
+      }
+
+      case 'match_confirm': {
+        if (!this.isSearching || this.inRoom) return;
+        const roomId = msg.roomId as string;
+        const guestId = msg.guestId as string;
+        const matchStartTime = (msg.matchStartTime as number) || Date.now() + 3200;
+        if (!roomId || !guestId) return;
+
+        this.enterMatchedRoom(roomId, 'host', guestId, matchStartTime);
         break;
       }
 
       case 'peer_left': {
+        if (!this.inRoom || senderId !== this.partnerId) return;
+        this.lastPartnerId = this.partnerId;
+        if (this.currentRoomId) {
+          this.mqtt.unsubscribe(`${TOPIC_PREFIX}/room/${this.currentRoomId}`);
+        }
         this.inRoom = false;
+        this.currentRoomId = null;
+        this.partnerId = null;
         this.remoteSwords = [];
         this.remoteSlashTrail = [];
         this.cleanupPeerConnection();
@@ -283,32 +684,53 @@ export class MultiplayerClient {
       }
 
       case 'webrtc_offer': {
+        if (!this.inRoom) return;
         if (!this.pc) {
           await this.setupPeerConnection(false);
         }
         if (this.pc && msg.sdp) {
-          await this.pc.setRemoteDescription(new RTCSessionDescription(msg.sdp as RTCSessionDescriptionInit));
-          const answer = await this.pc.createAnswer();
-          await this.pc.setLocalDescription(answer);
-          this.sendSignal({ type: 'webrtc_answer', sdp: this.pc.localDescription });
+          try {
+            await this.pc.setRemoteDescription(new RTCSessionDescription(msg.sdp as RTCSessionDescriptionInit));
+            this.remoteDescSet = true;
+            await this.flushPendingIceCandidates();
+            const answer = await this.pc.createAnswer();
+            await this.pc.setLocalDescription(answer);
+            this.publishToRoom({ type: 'webrtc_answer', sdp: this.pc.localDescription });
+          } catch {}
         }
         break;
       }
 
       case 'webrtc_answer': {
-        if (this.pc && msg.sdp) {
+        if (!this.inRoom || !this.pc || !msg.sdp) return;
+        try {
           await this.pc.setRemoteDescription(new RTCSessionDescription(msg.sdp as RTCSessionDescriptionInit));
-        }
+          this.remoteDescSet = true;
+          await this.flushPendingIceCandidates();
+        } catch {}
         break;
       }
 
       case 'webrtc_ice': {
-        if (this.pc && msg.candidate) {
+        if (!this.inRoom || !msg.candidate) return;
+        const candidateInit = msg.candidate as RTCIceCandidateInit;
+        if (this.pc && this.remoteDescSet) {
           try {
-            await this.pc.addIceCandidate(new RTCIceCandidate(msg.candidate as RTCIceCandidateInit));
-          } catch {
-            // Ignore benign ICE candidate race errors
-          }
+            await this.pc.addIceCandidate(new RTCIceCandidate(candidateInit));
+          } catch {}
+        } else {
+          this.pendingCandidates.push(candidateInit);
+        }
+        break;
+      }
+
+      case 'cam_frame': {
+        if (!this.inRoom) return;
+        if (typeof msg.voice === 'number') {
+          this.remoteFallbackVoiceLevel = msg.voice as number;
+        }
+        if (!this.webrtcMediaConnected && typeof msg.dataUrl === 'string' && this.callbacks.onRemoteFallbackFrame) {
+          this.callbacks.onRemoteFallbackFrame(msg.dataUrl);
         }
         break;
       }
@@ -354,18 +776,58 @@ export class MultiplayerClient {
     }
   }
 
+  private enterMatchedRoom(roomId: string, role: PlayerRole, partnerId: string, matchStartTime: number): void {
+    this.isSearching = false;
+    this.stopMatchmakingBeacons();
+    this.inRoom = true;
+    this.role = role;
+    this.currentRoomId = roomId;
+    this.partnerId = partnerId;
+    this.remoteSwords = [];
+    this.remoteSlashTrail = [];
+
+    this.mqtt.subscribe(`${TOPIC_PREFIX}/room/${roomId}`);
+    this.startFallbackCameraStream();
+    this.setupPeerConnection(role === 'host');
+    this.callbacks.onMatchFound(role, matchStartTime);
+  }
+
+  private async flushPendingIceCandidates(): Promise<void> {
+    if (!this.pc || !this.remoteDescSet) return;
+    while (this.pendingCandidates.length > 0) {
+      const cand = this.pendingCandidates.shift();
+      if (cand) {
+        try {
+          await this.pc.addIceCandidate(new RTCIceCandidate(cand));
+        } catch {}
+      }
+    }
+  }
+
   private async setupPeerConnection(isInitiator: boolean): Promise<void> {
-    this.cleanupPeerConnection();
+    this.cleanupPeerConnection(false);
 
     const pc = new RTCPeerConnection({
+      iceCandidatePoolSize: 8,
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:global.stun.twilio.com:3478' },
+        {
+          urls: [
+            'turn:openrelay.metered.ca:80',
+            'turn:openrelay.metered.ca:443',
+            'turn:openrelay.metered.ca:443?transport=tcp'
+          ],
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        }
       ]
     });
     this.pc = pc;
+    this.remoteDescSet = false;
 
-    // Attach local camera + microphone tracks for live video & voice call
     if (this.localStream) {
       for (const track of this.localStream.getTracks()) {
         pc.addTrack(track, this.localStream);
@@ -381,27 +843,29 @@ export class MultiplayerClient {
         }
         this.remoteStream.addTrack(event.track);
       }
+      this.webrtcMediaConnected = true;
       this.setupRemoteAudioAnalyser(this.remoteStream);
       this.callbacks.onRemoteStream(this.remoteStream);
     };
 
     pc.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
       if (event.candidate) {
-        this.sendSignal({ type: 'webrtc_ice', candidate: event.candidate.toJSON() });
+        this.publishToRoom({ type: 'webrtc_ice', candidate: event.candidate.toJSON() });
       }
     };
 
     if (isInitiator) {
-      // Unordered, zero-retransmit channel for ultra-low-latency 60fps sword movement
       const dc = pc.createDataChannel('vegi-fast-sync', {
         ordered: false,
         maxRetransmits: 0
       });
       this.attachDataChannel(dc);
 
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      this.sendSignal({ type: 'webrtc_offer', sdp: pc.localDescription });
+      try {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        this.publishToRoom({ type: 'webrtc_offer', sdp: pc.localDescription });
+      } catch {}
     } else {
       pc.ondatachannel = (event: RTCDataChannelEvent) => {
         this.attachDataChannel(event.channel);
@@ -417,13 +881,51 @@ export class MultiplayerClient {
         if (msg.type === 'sword_state') {
           this.receiveRemoteSwords(msg.swords || []);
         }
-      } catch {
-        // Ignore parse error
-      }
+      } catch {}
     };
   }
 
-  private cleanupPeerConnection(): void {
+  private startFallbackCameraStream(): void {
+    this.stopFallbackCameraStream();
+    if (!this.fallbackCanvas) {
+      this.fallbackCanvas = document.createElement('canvas');
+      this.fallbackCanvas.width = 160;
+      this.fallbackCanvas.height = 90;
+      this.fallbackCtx = this.fallbackCanvas.getContext('2d');
+    }
+
+    const localVideoEl = document.getElementById('webcam') as HTMLVideoElement | null;
+
+    this.fallbackFrameTimer = window.setInterval(() => {
+      if (!this.inRoom || !localVideoEl || localVideoEl.readyState < 2 || !this.fallbackCtx || !this.fallbackCanvas) {
+        return;
+      }
+      try {
+        this.fallbackCtx.drawImage(localVideoEl, 0, 0, 160, 90);
+        const dataUrl = this.fallbackCanvas.toDataURL('image/jpeg', 0.42);
+        this.publishToRoom({
+          type: 'cam_frame',
+          dataUrl,
+          voice: Math.round(this.localVoiceLevel * 100) / 100
+        });
+      } catch {}
+    }, 140);
+  }
+
+  private stopFallbackCameraStream(): void {
+    if (this.fallbackFrameTimer !== null) {
+      clearInterval(this.fallbackFrameTimer);
+      this.fallbackFrameTimer = null;
+    }
+  }
+
+  private cleanupPeerConnection(stopFallback = true): void {
+    if (stopFallback) {
+      this.stopFallbackCameraStream();
+    }
+    this.webrtcMediaConnected = false;
+    this.remoteDescSet = false;
+    this.pendingCandidates = [];
     if (this.fastChannel) {
       try {
         this.fastChannel.close();
@@ -442,11 +944,10 @@ export class MultiplayerClient {
 
   public sendSwordState(swords: SwordPose[], now: number): void {
     if (!this.inRoom) return;
-    // Send at ~60fps (every 15ms)
-    if (now - this.lastSwordSendTime < 15) return;
+    // Send at ~45-60fps (every 20ms)
+    if (now - this.lastSwordSendTime < 20) return;
     this.lastSwordSendTime = now;
 
-    // Round numbers slightly to keep packet tiny and fast
     const compactSwords = swords.map(s => ({
       x: Math.round(s.x * 10) / 10,
       y: Math.round(s.y * 10) / 10,
@@ -458,36 +959,34 @@ export class MultiplayerClient {
       try {
         this.fastChannel.send(JSON.stringify(packet));
         return;
-      } catch {
-        // Fallback to WebSocket
-      }
+      } catch {}
     }
-    this.sendSignal(packet);
+    this.publishToRoom(packet);
   }
 
   public sendSpawnTarget(target: Target): void {
     if (!this.inRoom) return;
-    this.sendSignal({ type: 'spawn_target', target });
+    this.publishToRoom({ type: 'spawn_target', target });
   }
 
   public sendSliceTarget(payload: SliceEventPayload): void {
     if (!this.inRoom) return;
-    this.sendSignal({ type: 'slice_target', payload });
+    this.publishToRoom({ type: 'slice_target', payload });
   }
 
   public sendScoreSync(payload: ScoreSyncPayload): void {
     if (!this.inRoom) return;
-    this.sendSignal({ type: 'score_sync', payload });
+    this.publishToRoom({ type: 'score_sync', payload });
   }
 
   public sendMatchOver(payload: MatchOverPayload): void {
     if (!this.inRoom) return;
-    this.sendSignal({ type: 'match_over', payload });
+    this.publishToRoom({ type: 'match_over', payload });
   }
 
   public sendRematchRequest(): number {
     const matchStartTime = Date.now() + 3200;
-    this.sendSignal({ type: 'rematch_ready', matchStartTime });
+    this.publishToRoom({ type: 'rematch_ready', matchStartTime });
     return matchStartTime;
   }
 
@@ -499,7 +998,6 @@ export class MultiplayerClient {
       return;
     }
 
-    // Resize array if hand count changed
     if (this.remoteSwords.length > swords.length) {
       this.remoteSwords.length = swords.length;
     }
@@ -533,17 +1031,14 @@ export class MultiplayerClient {
   }
 
   public updateRemoteInterpolation(dt: number, now: number): InterpolatedSword[] {
-    // Expire stale swords if no packet received for 450ms
-    if (this.remoteSwords.length > 0 && now - this.remoteSwords[0].lastUpdate > 450) {
+    if (this.remoteSwords.length > 0 && now - this.remoteSwords[0].lastUpdate > 650) {
       this.remoteSwords = [];
     }
 
-    // Frame-rate independent exponential smoothing factor (~28Hz responsiveness)
     const blend = 1 - Math.exp(-32 * Math.min(dt, 0.05));
 
     for (const sword of this.remoteSwords) {
-      // Slight dead-reckoning prediction (up to 25ms) for ultra-fluid motion
-      const ageSec = Math.min(0.025, Math.max(0, (now - sword.lastUpdate) / 1000));
+      const ageSec = Math.min(0.028, Math.max(0, (now - sword.lastUpdate) / 1000));
       const predictedX = sword.targetX + sword.vx * ageSec * 0.35;
       const predictedY = sword.targetY + sword.vy * ageSec * 0.35;
 
@@ -568,4 +1063,3 @@ export class MultiplayerClient {
     return this.remoteSwords;
   }
 }
-

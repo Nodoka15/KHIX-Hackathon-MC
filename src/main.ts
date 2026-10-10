@@ -13,6 +13,7 @@ import {
 
 const video = document.getElementById('webcam') as HTMLVideoElement;
 const remoteVideo = document.getElementById('remote-webcam') as HTMLVideoElement;
+const remoteFallbackImg = document.getElementById('remote-webcam-fallback') as HTMLImageElement;
 const canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
 
@@ -66,12 +67,14 @@ const multiplayer = new MultiplayerClient({
     game.state = 'SEARCHING';
     game.resetArena();
     remoteVideo.srcObject = null;
+    remoteVideo.style.display = 'block';
+    if (remoteFallbackImg) remoteFallbackImg.style.display = 'none';
     pipPlaceholder.style.display = 'flex';
     pipPlaceholder.textContent = 'SEARCHING QUEUE...';
     pipLabel.textContent = 'FINDING OPPONENT';
     countdownBanner.style.display = 'none';
 
-    modalBadge.textContent = 'OMEGLE ARENA QUEUE';
+    modalBadge.textContent = 'LIVE ARENA QUEUE';
     modalTitle.textContent = 'SEARCHING FOR KNIGHT...';
     modalDesc.textContent =
       'Waiting for another player to join the queue. Your voice call and shared arena will start automatically!';
@@ -93,6 +96,8 @@ const multiplayer = new MultiplayerClient({
     game.state = 'SEARCHING';
     game.resetArena();
     remoteVideo.srcObject = null;
+    remoteVideo.style.display = 'block';
+    if (remoteFallbackImg) remoteFallbackImg.style.display = 'none';
     pipPlaceholder.style.display = 'flex';
     pipPlaceholder.textContent = 'OPPONENT LEFT';
     countdownBanner.style.display = 'none';
@@ -112,9 +117,21 @@ const multiplayer = new MultiplayerClient({
   onRemoteStream: (stream: MediaStream) => {
     remoteVideo.srcObject = stream;
     remoteVideo.muted = false;
+    remoteVideo.style.display = 'block';
+    if (remoteFallbackImg) remoteFallbackImg.style.display = 'none';
     remoteVideo.play().catch(() => {});
     pipPlaceholder.style.display = 'none';
     pipLabel.textContent = 'OPPONENT LIVE • VOICE ON';
+  },
+
+  onRemoteFallbackFrame: (dataUrl: string) => {
+    if (remoteFallbackImg) {
+      remoteFallbackImg.src = dataUrl;
+      remoteFallbackImg.style.display = 'block';
+      remoteVideo.style.display = 'none';
+      pipPlaceholder.style.display = 'none';
+      pipLabel.textContent = 'OPPONENT LIVE';
+    }
   },
 
   onSpawnTarget: target => {
@@ -396,7 +413,7 @@ function showMainMenu(): void {
   modalBadge.textContent = 'UCF KNIGHTRO ARENA';
   modalTitle.textContent = 'VEGI KNIGHTS';
   modalDesc.textContent =
-    'Select your battle mode below. Wield your finger-tracked sword in Solo Arcade or jump into live 1v1 Omegle Multiplayer with voice chat!';
+    'Select your battle mode below. Wield your finger-tracked sword in Solo Arcade or jump into live 1v1 Multiplayer with video & voice chat!';
   menuOptions.style.display = 'grid';
   modalActions.style.display = 'none';
   modalScreen.style.display = 'block';
