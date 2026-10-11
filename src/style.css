@@ -80,7 +80,7 @@ body {
 
 .player-hud {
   background-color: var(--surface-white);
-  border: 3px solid var(--border-black);
+  border: none;
   box-shadow: none;
   border-radius: 15px;
   padding: 18px 25px;
@@ -90,7 +90,7 @@ body {
 
 .rival-hud {
   background-color: var(--surface-white);
-  border: 3px solid var(--border-black);
+  border: none;
   box-shadow: none;
   text-align: right;
 }
@@ -124,7 +124,7 @@ body {
   text-transform: uppercase;
   color: var(--text-black);
   background-color: var(--element-white);
-  border: 2px solid var(--border-black);
+  border: none;
   box-shadow: none;
   border-radius: 6px;
   padding: 4px 11px;
@@ -133,7 +133,7 @@ body {
 .best-score-badge.new-record {
   background-color: var(--sword-gold);
   color: var(--text-black);
-  border: 2px solid var(--border-black);
+  border: none;
   box-shadow: none;
 }
 
@@ -186,7 +186,7 @@ body {
   height: 100%;
   display: block;
   fill: currentColor;
-  stroke: var(--border-black);
+  stroke: none;
   stroke-width: 1.6px;
   stroke-linejoin: round;
   overflow: visible;
@@ -211,7 +211,7 @@ body {
 
 #mp-timer {
   background-color: var(--surface-white);
-  border: 3px solid var(--border-black);
+  border: none;
   box-shadow: none;
   border-radius: 12px;
   color: var(--text-black);
@@ -225,7 +225,7 @@ body {
 #mp-timer.urgent {
   background-color: var(--element-hover);
   color: var(--text-black);
-  border: 3px solid var(--border-black);
+  border: none;
   box-shadow: none;
 }
 
@@ -239,7 +239,7 @@ body {
   pointer-events: auto;
   background-color: var(--element-white);
   color: var(--text-black);
-  border: 2.5px solid var(--border-black);
+  border: none;
   outline: none;
   box-shadow: none;
   border-radius: 10px;
@@ -262,9 +262,9 @@ body {
 }
 
 .hud-chip-btn.accent-cyan {
-  background-color: var(--sword-gold);
+  background-color: white;
   color: var(--text-black);
-  border: 2.5px solid var(--border-black);
+  border: none;
   box-shadow: none;
 }
 
@@ -288,7 +288,7 @@ body {
   background-color: var(--surface-white);
   padding: 15px 52px;
   border-radius: 20px;
-  border: 4px solid var(--border-black);
+  border: none;
   box-shadow: none;
   letter-spacing: 0.04em;
   pointer-events: none;
@@ -318,7 +318,7 @@ body {
   animation: antigravity-float 5.6s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
   will-change: transform;
   background-color: var(--surface-white);
-  border: 3.5px solid var(--border-black);
+  border: none;
   box-shadow: none;
   border-radius: 20px;
   padding: 45px 58px;
@@ -332,7 +332,7 @@ body {
   display: inline-block;
   background-color: var(--element-white);
   color: var(--text-black);
-  border: 2.5px solid var(--border-black);
+  border: none;
   box-shadow: none;
   border-radius: 8px;
   font-family: var(--font-sans);
@@ -342,6 +342,7 @@ body {
   text-transform: uppercase;
   padding: 8px 20px;
   margin-bottom: 18px;
+  display: none;
 }
 
 .hud-modal h1 {
@@ -369,7 +370,7 @@ body {
 .hud-modal.loser-modal,
 .hud-modal.draw-modal {
   background-color: var(--surface-white);
-  border: 3.5px solid var(--border-black);
+  border: none;
   box-shadow: none;
 }
 
@@ -378,7 +379,7 @@ body {
 .hud-modal.draw-modal .modal-badge {
   background-color: var(--element-white);
   color: var(--text-black);
-  border: 2.5px solid var(--border-black);
+  border: none;
   box-shadow: none;
 }
 
@@ -403,7 +404,7 @@ body {
 .mode-card-btn {
   pointer-events: auto;
   position: relative;
-  border: 3px solid var(--border-black);
+  border: none;
   outline: none;
   box-shadow: none;
   border-radius: 15px;
@@ -423,48 +424,36 @@ body {
 
 /* SINGLEPLAYER BUTTON: Black fill, Sword Gold (#FFC904) text */
 .mode-card-btn.sp-card-btn {
-  background-color: var(--text-black);
-  color: var(--sword-gold);
-  border: 3px solid var(--border-black);
+  background-color: #63b15c;
+  color: #63b15c;
+  border: none;
 }
 
 .mode-card-btn.sp-card-btn .mode-title {
-  color: var(--sword-gold);
+  color: white;
 }
 
 .mode-card-btn.sp-card-btn .mode-sub {
   color: var(--sword-gold);
 }
 
-.mode-card-btn.sp-card-btn:hover {
-  transform: translate3d(0, -5px, 0);
-  background-color: #171717;
-  color: var(--sword-gold);
-}
-
 .mode-card-btn.sp-card-btn:hover .mode-title,
 .mode-card-btn.sp-card-btn:hover .mode-sub {
-  color: var(--sword-gold);
+  color: black;
 }
 
 /* MULTIPLAYER BUTTON: Sword Gold (#FFC904) fill, Black text */
 .mode-card-btn.mp-card-btn {
-  background-color: var(--sword-gold);
-  color: var(--text-black);
-  border: 3px solid var(--border-black);
+  background-color: #63b15c;
+  color: #63b15c;
+  border: none;
 }
 
 .mode-card-btn.mp-card-btn .mode-title {
-  color: var(--text-black);
+  color: white;
 }
 
 .mode-card-btn.mp-card-btn .mode-sub {
-  color: var(--text-black);
-}
-
-.mode-card-btn.mp-card-btn:hover {
-  transform: translate3d(0, -5px, 0);
-  background-color: var(--sword-gold-hover);
   color: var(--text-black);
 }
 
@@ -486,6 +475,7 @@ body {
   font-size: 14.375px;
   font-weight: 600;
   letter-spacing: 0.01em;
+  display: none;
 }
 
 /* ==========================================================================

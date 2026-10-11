@@ -376,11 +376,11 @@ function updateHUD(): void {
     game.state = 'GAMEOVER';
     clearModalOutcomeClasses();
     modalBadge.textContent = game.isNewHighScore && game.score > 0 ? '🏆 NEW HIGH SCORE!' : 'SOLO MATCH COMPLETE';
-    modalTitle.textContent = 'VALIANT DEFEAT';
+    modalTitle.textContent = 'YOU LOST';
     modalDesc.textContent =
       game.isNewHighScore && game.score > 0
-        ? `FINAL SCORE: ${game.score} (NEW PERSONAL BEST!). Raise both open hands or click below to re-enter battle!`
-        : `FINAL SCORE: ${game.score} • HIGH SCORE: ${game.highScore}. Raise both open hands or click below to re-enter battle!`;
+        ? `FINAL SCORE: ${game.score} (NEW PERSONAL BEST!). Raise both open hands or hit play again`
+        : `FINAL SCORE: ${game.score} - HIGH SCORE: ${game.highScore}. Raise both open hands or hit play again`;
     menuOptions.style.display = 'none';
     modalActions.style.display = 'flex';
     actionBtn.textContent = 'PLAY AGAIN';
@@ -473,39 +473,39 @@ function showMultiplayerGameOver(winner: PlayerRole | 'draw', reason: 'timeout' 
 
   if (isDraw) {
     modalScreen.classList.add('draw-modal');
-    modalBadge.textContent = '🤝 TIME UP • EQUAL POINTS';
-    modalTitle.textContent = 'DRAW!';
+    modalBadge.textContent = "TIME'S UP!";
+    modalTitle.textContent = "DRAW!";
   } else if (didWin) {
     modalScreen.classList.add('winner-modal');
     modalBadge.textContent =
-      reason === 'knockout' ? '🏆 KNOCKOUT • OPPONENT LOST ALL LIVES' : '🏆 TIME UP • FINAL RESULT';
+      reason === 'knockout' ? 'OPPONENT LOST ALL LIVES!' : "TIME'S UP!";
     modalTitle.textContent = 'WINNER!';
   } else {
     modalScreen.classList.add('loser-modal');
     modalBadge.textContent =
-      reason === 'knockout' ? '💀 KNOCKOUT • YOU LOST ALL LIVES' : '💀 TIME UP • FINAL RESULT';
+      reason === 'knockout' ? "YOU LOST ALL LIVES!" : "WIN!";
     modalTitle.textContent = 'LOSER';
   }
 
   const reasonText =
     reason === 'knockout'
       ? didWin
-        ? 'Your opponent lost all 3 hearts to poison mushrooms! You win the match!'
-        : 'You lost all 3 hearts to poison mushrooms! Match over!'
+        ? 'Great Job!'
+        : 'Better Luck Next Time'
       : isDraw
-        ? 'Both knights survived until time ran out with the exact same score!'
+        ? 'Same Score!'
         : didWin
-          ? 'Time is up and you finished with the higher score!'
-          : 'Time is up and your rival finished with the higher score!';
+          ? 'Great Job!'
+          : 'Unfortunatly You Got Less Points';
 
-  modalDesc.textContent = `${reasonText}  |  YOU: ${game.score} PTS (${game.lives} ❤️)  vs  RIVAL: ${game.opponentScore} PTS (${game.opponentLives} ❤️). Both players must click REMATCH (or raise both hands) to play again!`;
+  modalDesc.textContent = "Both players must click REMATCH to play again!";
 
   menuOptions.style.display = 'none';
   modalActions.style.display = 'flex';
   actionBtn.textContent = 'REMATCH (0/2)';
   actionBtn.disabled = false;
   actionBtn.style.display = 'inline-block';
-  secondaryBtn.textContent = 'NEXT OPPONENT ⏭';
+  secondaryBtn.textContent = 'NEXT OPPONENT';
   secondaryBtn.style.display = 'inline-block';
   backMenuBtn.style.display = 'inline-block';
   modalScreen.style.display = 'block';
@@ -535,7 +535,7 @@ function showMainMenu(): void {
   modalBadge.textContent = 'UCF KNIGHTRO ARENA';
   modalTitle.textContent = 'VEGI KNIGHTS';
   modalDesc.textContent =
-    'Select your battle mode below. Wield your finger-tracked sword in Solo Arcade or jump into live 1v1 Multiplayer!';
+    'Select your battle mode below';
   menuOptions.style.display = 'grid';
   modalActions.style.display = 'none';
   modalScreen.style.display = 'block';

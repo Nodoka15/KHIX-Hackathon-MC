@@ -105,7 +105,7 @@ export class GameEngine {
   public opponentScore = 0;
   public opponentLives = 3;
 
-  public matchDurationSec = 60;
+  public matchDurationSec = 30;
   public matchTimeRemaining = 60;
   private matchStartPerfTime = 0;
 
