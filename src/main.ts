@@ -376,11 +376,11 @@ function updateHUD(): void {
     game.state = 'GAMEOVER';
     clearModalOutcomeClasses();
     modalBadge.textContent = game.isNewHighScore && game.score > 0 ? '🏆 NEW HIGH SCORE!' : 'SOLO MATCH COMPLETE';
-    modalTitle.textContent = 'VALIANT DEFEAT';
+    modalTitle.textContent = 'YOU LOST';
     modalDesc.textContent =
       game.isNewHighScore && game.score > 0
-        ? `FINAL SCORE: ${game.score} (NEW PERSONAL BEST!). Raise both open hands or click below to re-enter battle!`
-        : `FINAL SCORE: ${game.score} • HIGH SCORE: ${game.highScore}. Raise both open hands or click below to re-enter battle!`;
+        ? `FINAL SCORE: ${game.score} (NEW PERSONAL BEST!). Raise both open hands or hit play again`
+        : `FINAL SCORE: ${game.score} - HIGH SCORE: ${game.highScore}. Raise both open hands or hit play again`;
     menuOptions.style.display = 'none';
     modalActions.style.display = 'flex';
     actionBtn.textContent = 'PLAY AGAIN';
@@ -505,7 +505,7 @@ function showMultiplayerGameOver(winner: PlayerRole | 'draw', reason: 'timeout' 
   actionBtn.textContent = 'REMATCH (0/2)';
   actionBtn.disabled = false;
   actionBtn.style.display = 'inline-block';
-  secondaryBtn.textContent = 'NEXT OPPONENT ⏭';
+  secondaryBtn.textContent = 'NEXT OPPONENT';
   secondaryBtn.style.display = 'inline-block';
   backMenuBtn.style.display = 'inline-block';
   modalScreen.style.display = 'block';
@@ -535,7 +535,7 @@ function showMainMenu(): void {
   modalBadge.textContent = 'UCF KNIGHTRO ARENA';
   modalTitle.textContent = 'VEGI KNIGHTS';
   modalDesc.textContent =
-    'Select your battle mode below. Wield your finger-tracked sword in Solo Arcade or jump into live 1v1 Multiplayer!';
+    'Select your battle mode below';
   menuOptions.style.display = 'grid';
   modalActions.style.display = 'none';
   modalScreen.style.display = 'block';
