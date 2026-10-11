@@ -473,32 +473,32 @@ function showMultiplayerGameOver(winner: PlayerRole | 'draw', reason: 'timeout' 
 
   if (isDraw) {
     modalScreen.classList.add('draw-modal');
-    modalBadge.textContent = '🤝 TIME UP • EQUAL POINTS';
-    modalTitle.textContent = 'DRAW!';
+    modalBadge.textContent = "TIME'S UP!";
+    modalTitle.textContent = "DRAW!";
   } else if (didWin) {
     modalScreen.classList.add('winner-modal');
     modalBadge.textContent =
-      reason === 'knockout' ? '🏆 KNOCKOUT • OPPONENT LOST ALL LIVES' : '🏆 TIME UP • FINAL RESULT';
+      reason === 'knockout' ? 'OPPONENT LOST ALL LIVES!' : "TIME'S UP!";
     modalTitle.textContent = 'WINNER!';
   } else {
     modalScreen.classList.add('loser-modal');
     modalBadge.textContent =
-      reason === 'knockout' ? '💀 KNOCKOUT • YOU LOST ALL LIVES' : '💀 TIME UP • FINAL RESULT';
+      reason === 'knockout' ? "YOU LOST ALL LIVES!" : "WIN!";
     modalTitle.textContent = 'LOSER';
   }
 
   const reasonText =
     reason === 'knockout'
       ? didWin
-        ? 'Your opponent lost all 3 hearts to poison mushrooms! You win the match!'
-        : 'You lost all 3 hearts to poison mushrooms! Match over!'
+        ? 'Great Job!'
+        : 'Better Luck Next Time'
       : isDraw
-        ? 'Both knights survived until time ran out with the exact same score!'
+        ? 'Same Score!'
         : didWin
-          ? 'Time is up and you finished with the higher score!'
-          : 'Time is up and your rival finished with the higher score!';
+          ? 'Great Job!'
+          : 'Unfortunatly You Got Less Points';
 
-  modalDesc.textContent = `${reasonText}  |  YOU: ${game.score} PTS (${game.lives} ❤️)  vs  RIVAL: ${game.opponentScore} PTS (${game.opponentLives} ❤️). Both players must click REMATCH (or raise both hands) to play again!`;
+  modalDesc.textContent = "Both players must click REMATCH to play again!";
 
   menuOptions.style.display = 'none';
   modalActions.style.display = 'flex';
