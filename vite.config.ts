@@ -148,6 +148,15 @@ function createMultiplayerSignalingPlugin(): Plugin {
         break;
       }
 
+      case 'pubsub': {
+        for (const [id, other] of clients.entries()) {
+          if (id !== client.id && other.isAlive) {
+            other.send(msg);
+          }
+        }
+        break;
+      }
+
       default: {
         // Relay WebRTC signaling & real-time game packets directly to room partner
         if (client.partnerId) {

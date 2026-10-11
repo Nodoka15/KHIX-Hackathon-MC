@@ -82,17 +82,17 @@ export class VegiRenderer {
     // Floating badge for Opponent sword so both players clearly track each other
     if (isRemote) {
       ctx.save();
-      ctx.translate(tipX, tipY - 22);
+      ctx.translate(tipX, tipY - 26);
       ctx.scale(-1, 1); // Un-mirror text since canvas has scaleX(-1)
-      ctx.font = '900 13px "Arial Black", Impact, sans-serif';
+      ctx.font = '900 16px "Arial Black", Impact, sans-serif';
       ctx.textAlign = 'center';
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(-30, -18, 60, 22);
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 2.5;
+      ctx.strokeRect(-30, -18, 60, 22);
       ctx.fillStyle = '#000000';
-      ctx.fillRect(-24, -14, 48, 18);
-      ctx.strokeStyle = '#00E5FF';
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(-24, -14, 48, 18);
-      ctx.fillStyle = '#00E5FF';
-      ctx.fillText('RIVAL', 0, -1);
+      ctx.fillText('RIVAL', 0, -2);
       ctx.restore();
     }
   }
@@ -390,10 +390,10 @@ export class VegiRenderer {
       ctx.globalAlpha = Math.max(0, ft.alpha);
       ctx.translate(ft.x, ft.y);
       ctx.scale(-1, 1); // Un-mirror text for mirrored canvas
-      ctx.font = '900 22px "Arial Black", Impact, sans-serif';
+      ctx.font = '900 28px "Arial Black", Impact, sans-serif';
       ctx.textAlign = 'center';
       ctx.strokeStyle = '#000000';
-      ctx.lineWidth = 4;
+      ctx.lineWidth = 5;
       ctx.strokeText(ft.text, 0, 0);
       ctx.fillStyle = ft.color;
       ctx.fillText(ft.text, 0, 0);

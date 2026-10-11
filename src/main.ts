@@ -8,21 +8,22 @@ import {
   SwordPose,
   SliceEventPayload,
   ScoreSyncPayload,
-  MatchOverPayload
+  MatchOverPayload,
+  PeerSyncState
 } from './multiplayer';
 
 const video = document.getElementById('webcam') as HTMLVideoElement;
-const remoteVideo = document.getElementById('remote-webcam') as HTMLVideoElement;
 const canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
 
 // HUD Elements
 const scoreEl = document.getElementById('score-display')!;
+const bestScoreEl = document.getElementById('best-score-display')!;
+const spModeSub = document.getElementById('sp-mode-sub')!;
 const opponentHud = document.getElementById('opponent-hud')!;
 const opponentScoreEl = document.getElementById('opponent-score-display')!;
 const mpTimerEl = document.getElementById('mp-timer')!;
 const topControls = document.getElementById('top-controls')!;
-const muteBtn = document.getElementById('mute-btn') as HTMLButtonElement;
 const nextOpponentBtn = document.getElementById('next-opponent-btn') as HTMLButtonElement;
 const menuBtn = document.getElementById('menu-btn') as HTMLButtonElement;
 const countdownBanner = document.getElementById('countdown-banner')!;
@@ -40,41 +41,109 @@ const actionBtn = document.getElementById('action-btn') as HTMLButtonElement;
 const secondaryBtn = document.getElementById('secondary-btn') as HTMLButtonElement;
 const backMenuBtn = document.getElementById('back-menu-btn') as HTMLButtonElement;
 
-// PiP Elements
-const pipContainer = document.getElementById('pip-container')!;
-const pipPlaceholder = document.getElementById('pip-placeholder')!;
-const pipLabel = document.getElementById('pip-label')!;
-const localMicIndicator = document.getElementById('local-mic-indicator')!;
-const voiceBars = Array.from(document.querySelectorAll('#voice-bars .v-bar')) as HTMLElement[];
-
 const vision = new VisionPipeline();
 const game = new GameEngine();
 const renderer = new VegiRenderer(ctx);
 
-const filters: OneEuroFilter2D[] = [
-  new OneEuroFilter2D(1.0, 0.007),
-  new OneEuroFilter2D(1.0, 0.007)
-];
+interface CursorSlot {
+  filter: OneEuroFilter2D;
+  lastX: number;
+  lastY: number;
+  lastSeenTime: number;
+}
+
+const cursorSlots: CursorSlot[] = Array.from({ length: 4 }, () => ({
+  filter: new OneEuroFilter2D(1.0, 0.007),
+  lastX: 0,
+  lastY: 0,
+  lastSeenTime: -1000
+}));
 
 let lastFrameTime = performance.now();
 let countdownTargetPerfTime = 0;
 let lastScoreSyncTime = 0;
+
+// Multiplayer Match & Mutual Rematch State
+let currentMatchId = 1;
+let lastMatchOverPayload: MatchOverPayload | null = null;
+let localRematchReady = false;
+let remoteRematchReady = false;
+
+function clearModalOutcomeClasses(): void {
+  modalScreen.classList.remove('winner-modal', 'loser-modal', 'draw-modal');
+  actionBtn.disabled = false;
+}
+
+function applyRemoteMatchOver(payload: MatchOverPayload): void {
+  if (game.mode !== 'MULTIPLAYER' || game.state === 'GAMEOVER') return;
+  if (multiplayer.role === 'host') {
+    game.score = payload.hostScore;
+    game.lives = payload.hostLives;
+    game.opponentScore = payload.guestScore;
+    game.opponentLives = payload.guestLives;
+  } else {
+    game.score = payload.guestScore;
+    game.lives = payload.guestLives;
+    game.opponentScore = payload.hostScore;
+    game.opponentLives = payload.hostLives;
+  }
+  lastMatchOverPayload = payload;
+  updateHUD();
+  showMultiplayerGameOver(payload.winner, payload.reason);
+}
+
+function handleRemoteRematchVote(matchId: number): void {
+  if (game.mode !== 'MULTIPLAYER' || game.state !== 'GAMEOVER') return;
+  if (matchId > 0 && matchId < currentMatchId) return;
+  if (remoteRematchReady) return;
+
+  remoteRematchReady = true;
+
+  if (localRematchReady && remoteRematchReady) {
+    const nextId = currentMatchId + 1;
+    multiplayer.sendRematchStart(nextId, 3000);
+    beginMultiplayerCountdown(3000, nextId);
+  } else {
+    modalBadge.textContent = '⚔️ RIVAL WANTS A REMATCH (1/2 READY)!';
+    actionBtn.textContent = 'ACCEPT REMATCH (1/2 READY)';
+    actionBtn.disabled = false;
+  }
+}
+
+function triggerLocalRematchVote(): void {
+  if (game.mode !== 'MULTIPLAYER' || game.state !== 'GAMEOVER' || !multiplayer.inRoom) return;
+  if (localRematchReady) return;
+
+  localRematchReady = true;
+  game.gestureProgress = 0;
+  multiplayer.sendRematchVote(currentMatchId);
+
+  if (localRematchReady && remoteRematchReady) {
+    const nextId = currentMatchId + 1;
+    multiplayer.sendRematchStart(nextId, 3000);
+    beginMultiplayerCountdown(3000, nextId);
+  } else {
+    modalBadge.textContent = '⏳ REMATCH REQUESTED (1/2 READY) • WAITING FOR RIVAL';
+    actionBtn.textContent = 'WAITING FOR RIVAL (1/2)...';
+    actionBtn.disabled = true;
+  }
+}
 
 // Setup Multiplayer Client & Callbacks
 const multiplayer = new MultiplayerClient({
   onSearching: () => {
     game.state = 'SEARCHING';
     game.resetArena();
-    remoteVideo.srcObject = null;
-    pipPlaceholder.style.display = 'flex';
-    pipPlaceholder.textContent = 'SEARCHING QUEUE...';
-    pipLabel.textContent = 'FINDING OPPONENT';
     countdownBanner.style.display = 'none';
+    lastMatchOverPayload = null;
+    localRematchReady = false;
+    remoteRematchReady = false;
+    clearModalOutcomeClasses();
 
-    modalBadge.textContent = 'OMEGLE ARENA QUEUE';
+    modalBadge.textContent = 'LIVE ARENA QUEUE';
     modalTitle.textContent = 'SEARCHING FOR KNIGHT...';
     modalDesc.textContent =
-      'Waiting for another player to join the queue. Your voice call and shared arena will start automatically!';
+      'Waiting for another player to join the queue. Your shared arena battle will start automatically!';
     menuOptions.style.display = 'none';
     modalActions.style.display = 'flex';
     actionBtn.style.display = 'none';
@@ -83,19 +152,19 @@ const multiplayer = new MultiplayerClient({
     modalScreen.style.display = 'block';
   },
 
-  onMatchFound: (role: PlayerRole, matchStartTime: number) => {
-    pipPlaceholder.textContent = 'CONNECTING VOICE & VIDEO...';
-    pipLabel.textContent = role === 'host' ? 'RIVAL KNIGHT (P2)' : 'RIVAL KNIGHT (P1)';
-    beginMultiplayerCountdown(matchStartTime);
+  onMatchFound: (_role: PlayerRole, countdownMs: number) => {
+    currentMatchId = 1;
+    beginMultiplayerCountdown(countdownMs, 1);
   },
 
   onPeerLeft: () => {
     game.state = 'SEARCHING';
     game.resetArena();
-    remoteVideo.srcObject = null;
-    pipPlaceholder.style.display = 'flex';
-    pipPlaceholder.textContent = 'OPPONENT LEFT';
     countdownBanner.style.display = 'none';
+    lastMatchOverPayload = null;
+    localRematchReady = false;
+    remoteRematchReady = false;
+    clearModalOutcomeClasses();
 
     modalBadge.textContent = 'OPPONENT DISCONNECTED';
     modalTitle.textContent = 'KNIGHT LEFT THE ARENA';
@@ -109,22 +178,18 @@ const multiplayer = new MultiplayerClient({
     modalScreen.style.display = 'block';
   },
 
-  onRemoteStream: (stream: MediaStream) => {
-    remoteVideo.srcObject = stream;
-    remoteVideo.muted = false;
-    remoteVideo.play().catch(() => {});
-    pipPlaceholder.style.display = 'none';
-    pipLabel.textContent = 'OPPONENT LIVE • VOICE ON';
-  },
-
   onSpawnTarget: target => {
-    if (game.mode === 'MULTIPLAYER' && game.state === 'PLAYING') {
+    if (game.mode === 'MULTIPLAYER' && (game.state === 'PLAYING' || game.state === 'COUNTDOWN')) {
+      if (game.state === 'COUNTDOWN') {
+        countdownBanner.style.display = 'none';
+        game.start();
+      }
       game.addRemoteTarget(target);
     }
   },
 
   onSliceTarget: (payload: SliceEventPayload) => {
-    if (game.mode !== 'MULTIPLAYER') return;
+    if (game.mode !== 'MULTIPLAYER' || game.state === 'GAMEOVER') return;
     game.applyRemoteSlice(
       payload.targetId,
       payload.cutAngle,
@@ -133,42 +198,75 @@ const multiplayer = new MultiplayerClient({
       () => {
         updateHUD();
         checkMultiplayerKnockout();
-      }
+      },
+      payload.isBomb,
+      payload.points,
+      payload.slicerScore,
+      payload.slicerLives
     );
   },
 
   onScoreSync: (payload: ScoreSyncPayload) => {
-    if (game.mode !== 'MULTIPLAYER' || game.state !== 'PLAYING') return;
+    if (game.mode !== 'MULTIPLAYER' || (game.state !== 'PLAYING' && game.state !== 'COUNTDOWN')) return;
     if (multiplayer.role === 'guest') {
-      game.score = payload.guestScore;
-      game.lives = payload.guestLives;
+      if (game.state === 'COUNTDOWN') {
+        countdownBanner.style.display = 'none';
+        game.start();
+      }
+      // Only update host's score/lives/timer/targets; guest is authoritative for guest's own score and lives
       game.opponentScore = payload.hostScore;
       game.opponentLives = payload.hostLives;
       game.matchTimeRemaining = payload.timeRemainingMs / 1000;
+      if (payload.targets) {
+        game.syncRemoteTargets(payload.targets);
+      }
       updateHUD();
+      checkMultiplayerKnockout();
     }
   },
 
   onMatchOver: (payload: MatchOverPayload) => {
-    if (game.mode !== 'MULTIPLAYER') return;
-    if (multiplayer.role === 'host') {
-      game.score = payload.hostScore;
-      game.lives = payload.hostLives;
-      game.opponentScore = payload.guestScore;
-      game.opponentLives = payload.guestLives;
-    } else {
-      game.score = payload.guestScore;
-      game.lives = payload.guestLives;
-      game.opponentScore = payload.hostScore;
-      game.opponentLives = payload.hostLives;
-    }
-    updateHUD();
-    showMultiplayerGameOver(payload.winner, payload.reason);
+    applyRemoteMatchOver(payload);
   },
 
-  onRematchStart: (matchStartTime: number) => {
+  onPeerSyncState: (sync: PeerSyncState) => {
     if (game.mode !== 'MULTIPLAYER') return;
-    beginMultiplayerCountdown(matchStartTime);
+
+    if (game.state === 'PLAYING' && sync.matchId === currentMatchId) {
+      const changed = game.opponentScore !== sync.score || game.opponentLives !== sync.lives;
+      game.opponentScore = sync.score;
+      game.opponentLives = sync.lives;
+      if (changed) {
+        updateHUD();
+      }
+      if (sync.matchOver) {
+        applyRemoteMatchOver(sync.matchOver);
+        return;
+      }
+      if (game.opponentLives <= 0 || game.lives <= 0) {
+        checkMultiplayerKnockout();
+      }
+    } else if (game.state === 'GAMEOVER') {
+      if (sync.matchId === currentMatchId && sync.rematchReady && !remoteRematchReady) {
+        handleRemoteRematchVote(sync.matchId);
+      } else if (sync.matchId > currentMatchId && localRematchReady) {
+        beginMultiplayerCountdown(3000, sync.matchId);
+      }
+    }
+  },
+
+  onRematchVote: (matchId: number) => {
+    handleRemoteRematchVote(matchId);
+  },
+
+  onRematchStart: (nextMatchId: number, countdownMs: number) => {
+    if (game.mode !== 'MULTIPLAYER' || game.state !== 'GAMEOVER') return;
+    if (!localRematchReady) {
+      handleRemoteRematchVote(currentMatchId);
+      return;
+    }
+    const targetMatchId = nextMatchId > currentMatchId ? nextMatchId : currentMatchId + 1;
+    beginMultiplayerCountdown(countdownMs, targetMatchId);
   }
 });
 
@@ -186,37 +284,37 @@ game.onTargetSlicedByLocal = (target, cutAngle, nearestX, nearestY) => {
       cutAngle,
       nearestX,
       nearestY,
-      slicerRole: multiplayer.role
+      slicerRole: multiplayer.role,
+      isBomb: target.isBomb,
+      points: target.points,
+      slicerScore: game.score,
+      slicerLives: game.lives
     });
     checkMultiplayerKnockout();
   }
 };
 
 async function bootstrapCamera(): Promise<void> {
-  let stream: MediaStream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: 1280, height: 720, frameRate: { ideal: 60 } },
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
-      }
-    });
-  } catch {
-    // Fallback if microphone permission is denied or no mic hardware is present
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: 1280, height: 720, frameRate: { ideal: 60 } },
-      audio: false
-    });
-  }
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { width: 1280, height: 720, frameRate: { ideal: 60 } },
+    audio: false
+  });
   video.srcObject = stream;
-  multiplayer.setLocalStream(stream);
   await new Promise(res => (video.onloadedmetadata = res));
 }
 
-function beginMultiplayerCountdown(matchStartEpochMs: number): void {
-  const delayMs = Math.max(800, matchStartEpochMs - Date.now());
+function beginMultiplayerCountdown(countdownOrEpochMs: number, nextMatchId?: number): void {
+  if (typeof nextMatchId === 'number' && nextMatchId > 0) {
+    currentMatchId = nextMatchId;
+  }
+  lastMatchOverPayload = null;
+  localRematchReady = false;
+  remoteRematchReady = false;
+
+  const delayMs =
+    countdownOrEpochMs <= 15000
+      ? Math.max(800, countdownOrEpochMs)
+      : Math.max(800, countdownOrEpochMs - Date.now());
   countdownTargetPerfTime = performance.now() + delayMs;
   game.state = 'COUNTDOWN';
   game.score = 0;
@@ -225,6 +323,7 @@ function beginMultiplayerCountdown(matchStartEpochMs: number): void {
   game.opponentLives = 3;
   game.matchTimeRemaining = game.matchDurationSec;
   game.resetArena();
+  clearModalOutcomeClasses();
   updateHUD();
 
   modalScreen.style.display = 'none';
@@ -241,6 +340,16 @@ function updateHUD(): void {
     } else {
       heart.classList.remove('lost');
     }
+  }
+
+  if (game.mode === 'SINGLEPLAYER') {
+    bestScoreEl.style.display = 'inline-block';
+    bestScoreEl.textContent = game.isNewHighScore
+      ? `★ BEST: ${game.highScore}`
+      : `BEST: ${game.highScore}`;
+    bestScoreEl.classList.toggle('new-record', game.isNewHighScore);
+  } else {
+    bestScoreEl.style.display = 'none';
   }
 
   if (game.mode === 'MULTIPLAYER') {
@@ -265,9 +374,13 @@ function updateHUD(): void {
     }
   } else if (game.lives <= 0 && game.state === 'PLAYING') {
     game.state = 'GAMEOVER';
-    modalBadge.textContent = 'SOLO MATCH COMPLETE';
+    clearModalOutcomeClasses();
+    modalBadge.textContent = game.isNewHighScore && game.score > 0 ? '🏆 NEW HIGH SCORE!' : 'SOLO MATCH COMPLETE';
     modalTitle.textContent = 'VALIANT DEFEAT';
-    modalDesc.textContent = `FINAL SCORE: ${game.score}. Raise both open hands or click below to re-enter battle!`;
+    modalDesc.textContent =
+      game.isNewHighScore && game.score > 0
+        ? `FINAL SCORE: ${game.score} (NEW PERSONAL BEST!). Raise both open hands or click below to re-enter battle!`
+        : `FINAL SCORE: ${game.score} • HIGH SCORE: ${game.highScore}. Raise both open hands or click below to re-enter battle!`;
     menuOptions.style.display = 'none';
     modalActions.style.display = 'flex';
     actionBtn.textContent = 'PLAY AGAIN';
@@ -305,6 +418,7 @@ function checkMultiplayerKnockout(): void {
       guestLives
     };
 
+    lastMatchOverPayload = payload;
     multiplayer.sendMatchOver(payload);
     showMultiplayerGameOver(winner, 'knockout');
   }
@@ -318,13 +432,18 @@ function handleMultiplayerTimeUp(): void {
   const guestScore = multiplayer.role === 'guest' ? game.score : game.opponentScore;
   const guestLives = multiplayer.role === 'guest' ? game.lives : game.opponentLives;
 
+  // When time runs out and both players still have lives left, winner is determined strictly by points; equal points = DRAW
   let winner: PlayerRole | 'draw' = 'draw';
-  if (hostScore > guestScore) {
+  if (hostLives <= 0 && guestLives > 0) {
+    winner = 'guest';
+  } else if (guestLives <= 0 && hostLives > 0) {
+    winner = 'host';
+  } else if (hostScore > guestScore) {
     winner = 'host';
   } else if (guestScore > hostScore) {
     winner = 'guest';
-  } else if (hostLives !== guestLives) {
-    winner = hostLives > guestLives ? 'host' : 'guest';
+  } else {
+    winner = 'draw';
   }
 
   const payload: MatchOverPayload = {
@@ -336,9 +455,8 @@ function handleMultiplayerTimeUp(): void {
     guestLives
   };
 
-  if (multiplayer.role === 'host') {
-    multiplayer.sendMatchOver(payload);
-  }
+  lastMatchOverPayload = payload;
+  multiplayer.sendMatchOver(payload);
   showMultiplayerGameOver(winner, 'timeout');
 }
 
@@ -346,31 +464,46 @@ function showMultiplayerGameOver(winner: PlayerRole | 'draw', reason: 'timeout' 
   if (game.state === 'GAMEOVER') return;
   game.state = 'GAMEOVER';
   countdownBanner.style.display = 'none';
+  localRematchReady = false;
+  remoteRematchReady = false;
+  clearModalOutcomeClasses();
 
   const didWin = winner !== 'draw' && winner === multiplayer.role;
   const isDraw = winner === 'draw';
 
-  modalBadge.textContent = reason === 'knockout' ? 'KNOCKOUT • LAST KNIGHT STANDING' : 'TIME UP • FINAL SCORE';
   if (isDraw) {
-    modalTitle.textContent = 'HONORABLE DRAW!';
+    modalScreen.classList.add('draw-modal');
+    modalBadge.textContent = '🤝 TIME UP • EQUAL POINTS';
+    modalTitle.textContent = 'DRAW!';
   } else if (didWin) {
-    modalTitle.textContent = 'GLORIOUS VICTORY!';
+    modalScreen.classList.add('winner-modal');
+    modalBadge.textContent =
+      reason === 'knockout' ? '🏆 KNOCKOUT • OPPONENT LOST ALL LIVES' : '🏆 TIME UP • FINAL RESULT';
+    modalTitle.textContent = 'WINNER!';
   } else {
-    modalTitle.textContent = 'VALIANT DEFEAT';
+    modalScreen.classList.add('loser-modal');
+    modalBadge.textContent =
+      reason === 'knockout' ? '💀 KNOCKOUT • YOU LOST ALL LIVES' : '💀 TIME UP • FINAL RESULT';
+    modalTitle.textContent = 'LOSER';
   }
 
   const reasonText =
     reason === 'knockout'
-      ? game.lives <= 0
-        ? 'You lost all 3 hearts to poison mushrooms!'
-        : 'Your opponent lost all 3 hearts!'
-      : '60-second arena battle complete!';
+      ? didWin
+        ? 'Your opponent lost all 3 hearts to poison mushrooms! You win the match!'
+        : 'You lost all 3 hearts to poison mushrooms! Match over!'
+      : isDraw
+        ? 'Both knights survived until time ran out with the exact same score!'
+        : didWin
+          ? 'Time is up and you finished with the higher score!'
+          : 'Time is up and your rival finished with the higher score!';
 
-  modalDesc.textContent = `${reasonText} YOU: ${game.score} pts (${game.lives} ❤️) vs RIVAL: ${game.opponentScore} pts (${game.opponentLives} ❤️). Voice call is still live—raise both hands or click REMATCH!`;
+  modalDesc.textContent = `${reasonText}  |  YOU: ${game.score} PTS (${game.lives} ❤️)  vs  RIVAL: ${game.opponentScore} PTS (${game.opponentLives} ❤️). Both players must click REMATCH (or raise both hands) to play again!`;
 
   menuOptions.style.display = 'none';
   modalActions.style.display = 'flex';
-  actionBtn.textContent = 'REMATCH';
+  actionBtn.textContent = 'REMATCH (0/2)';
+  actionBtn.disabled = false;
   actionBtn.style.display = 'inline-block';
   secondaryBtn.textContent = 'NEXT OPPONENT ⏭';
   secondaryBtn.style.display = 'inline-block';
@@ -384,19 +517,25 @@ function showMainMenu(): void {
   game.state = 'MENU';
   game.score = 0;
   game.lives = 3;
+  game.isNewHighScore = false;
+  lastMatchOverPayload = null;
+  localRematchReady = false;
+  remoteRematchReady = false;
   game.resetArena();
+  clearModalOutcomeClasses();
   updateHUD();
+
+  spModeSub.textContent = `Solo Arcade • 3 Lives • Best: ${game.highScore}`;
 
   opponentHud.style.display = 'none';
   mpTimerEl.style.display = 'none';
   topControls.style.display = 'none';
-  pipContainer.style.display = 'none';
   countdownBanner.style.display = 'none';
 
   modalBadge.textContent = 'UCF KNIGHTRO ARENA';
   modalTitle.textContent = 'VEGI KNIGHTS';
   modalDesc.textContent =
-    'Select your battle mode below. Wield your finger-tracked sword in Solo Arcade or jump into live 1v1 Omegle Multiplayer with voice chat!';
+    'Select your battle mode below. Wield your finger-tracked sword in Solo Arcade or jump into live 1v1 Multiplayer!';
   menuOptions.style.display = 'grid';
   modalActions.style.display = 'none';
   modalScreen.style.display = 'block';
@@ -408,16 +547,19 @@ function enterSingleplayer(): void {
   game.state = 'CALIBRATION';
   game.score = 0;
   game.lives = 3;
+  game.isNewHighScore = false;
+  lastMatchOverPayload = null;
+  localRematchReady = false;
+  remoteRematchReady = false;
   game.resetArena();
+  clearModalOutcomeClasses();
   updateHUD();
 
   opponentHud.style.display = 'none';
   mpTimerEl.style.display = 'none';
-  pipContainer.style.display = 'none';
   countdownBanner.style.display = 'none';
 
   topControls.style.display = 'flex';
-  muteBtn.style.display = 'none';
   nextOpponentBtn.style.display = 'none';
 
   modalBadge.textContent = 'SINGLEPLAYER MODE';
@@ -427,6 +569,7 @@ function enterSingleplayer(): void {
   menuOptions.style.display = 'none';
   modalActions.style.display = 'flex';
   actionBtn.textContent = 'START MATCH';
+  actionBtn.disabled = false;
   actionBtn.style.display = 'inline-block';
   secondaryBtn.style.display = 'none';
   backMenuBtn.style.display = 'inline-block';
@@ -441,15 +584,16 @@ function enterMultiplayer(): void {
   game.opponentScore = 0;
   game.opponentLives = 3;
   game.matchTimeRemaining = game.matchDurationSec;
+  lastMatchOverPayload = null;
+  localRematchReady = false;
+  remoteRematchReady = false;
   game.resetArena();
   updateHUD();
 
   opponentHud.style.display = 'block';
   mpTimerEl.style.display = 'block';
   topControls.style.display = 'flex';
-  muteBtn.style.display = 'inline-block';
   nextOpponentBtn.style.display = 'inline-block';
-  pipContainer.style.display = 'block';
   countdownBanner.style.display = 'none';
 
   multiplayer.connectAndFindMatch();
@@ -471,8 +615,7 @@ actionBtn.addEventListener('click', () => {
     modalScreen.style.display = 'none';
     game.gestureProgress = 0;
   } else if (game.mode === 'MULTIPLAYER' && game.state === 'GAMEOVER') {
-    const startTime = multiplayer.sendRematchRequest();
-    beginMultiplayerCountdown(startTime);
+    triggerLocalRematchVote();
   }
 });
 
@@ -496,31 +639,57 @@ menuBtn.addEventListener('click', () => {
   showMainMenu();
 });
 
-muteBtn.addEventListener('click', () => {
-  const isMuted = multiplayer.toggleMute();
-  muteBtn.textContent = isMuted ? 'MIC: MUTED' : 'MIC: ON';
-  muteBtn.classList.toggle('muted', isMuted);
-  localMicIndicator.textContent = isMuted ? '🔇 MIC MUTED' : '🎤 VOICE CALL ACTIVE';
-});
-
 function checkTwoHandsRaised(hands: VisionPacket['hands']): boolean {
   if (hands.length < 2) return false;
   return hands[0][8].y < hands[0][0].y && hands[1][8].y < hands[1][0].y;
 }
 
-function updateVoiceUI(): void {
-  if (game.mode !== 'MULTIPLAYER') return;
-  multiplayer.updateVoiceLevels();
+interface RawFingerCursor {
+  tipX: number;
+  tipY: number;
+  knuckleX: number;
+  knuckleY: number;
+}
 
-  const remoteLevel = multiplayer.remoteVoiceLevel;
-  const isOpponentSpeaking = remoteLevel > 0.12;
-  pipContainer.classList.toggle('speaking', isOpponentSpeaking);
+function extractFingerCursors(hands: VisionPacket['hands']): RawFingerCursor[] {
+  const cursors: RawFingerCursor[] = [];
 
-  for (let i = 0; i < voiceBars.length; i++) {
-    const scale = Math.min(1, remoteLevel * (1.4 + i * 0.35));
-    const h = Math.max(4, Math.round(scale * 14));
-    voiceBars[i].style.height = `${h}px`;
+  for (const hand of hands) {
+    // 1. Primary cursor: Index finger (tip 8, knuckle 5)
+    const idxTipX = hand[8].x * canvas.width;
+    const idxTipY = hand[8].y * canvas.height;
+    cursors.push({
+      tipX: idxTipX,
+      tipY: idxTipY,
+      knuckleX: hand[5].x * canvas.width,
+      knuckleY: hand[5].y * canvas.height
+    });
+
+    // 2. Secondary cursor on the same hand if playing with two fingers (Middle finger tip 12, knuckle 9)
+    const wrist = hand[0];
+    const dMidTip = Math.hypot(hand[12].x - wrist.x, hand[12].y - wrist.y);
+    const dMidPip = Math.hypot(hand[10].x - wrist.x, hand[10].y - wrist.y);
+    const dRingTip = Math.hypot(hand[16].x - wrist.x, hand[16].y - wrist.y);
+    const dRingPip = Math.hypot(hand[14].x - wrist.x, hand[14].y - wrist.y);
+
+    const midTipX = hand[12].x * canvas.width;
+    const midTipY = hand[12].y * canvas.height;
+    const tipSeparationPx = Math.hypot(idxTipX - midTipX, idxTipY - midTipY);
+
+    const isMiddleExtended = dMidTip > dMidPip * 1.12;
+    const isRingCurled = dRingTip < dRingPip * 1.16;
+
+    if (isMiddleExtended && isRingCurled && tipSeparationPx > 22) {
+      cursors.push({
+        tipX: midTipX,
+        tipY: midTipY,
+        knuckleX: hand[9].x * canvas.width,
+        knuckleY: hand[9].y * canvas.height
+      });
+    }
   }
+
+  return cursors.slice(0, 4);
 }
 
 function loop(now: number): void {
@@ -551,10 +720,10 @@ function loop(now: number): void {
     }
   }
 
-  // 4. Hands-free Gesture Detection (Singleplayer Start/Restart & Multiplayer Rematch)
+  // 4. Hands-free Gesture Detection (Singleplayer Start/Restart & Multiplayer Rematch Vote)
   const canUseHandsGesture =
     (game.mode === 'SINGLEPLAYER' && (game.state === 'CALIBRATION' || game.state === 'GAMEOVER')) ||
-    (game.mode === 'MULTIPLAYER' && game.state === 'GAMEOVER' && multiplayer.inRoom);
+    (game.mode === 'MULTIPLAYER' && game.state === 'GAMEOVER' && multiplayer.inRoom && !localRematchReady);
 
   if (canUseHandsGesture) {
     if (checkTwoHandsRaised(visionData.hands)) {
@@ -566,8 +735,7 @@ function loop(now: number): void {
           updateHUD();
           modalScreen.style.display = 'none';
         } else if (game.mode === 'MULTIPLAYER') {
-          const startTime = multiplayer.sendRematchRequest();
-          beginMultiplayerCountdown(startTime);
+          triggerLocalRematchVote();
         }
       }
     } else {
@@ -576,21 +744,61 @@ function loop(now: number): void {
     renderer.renderGestureMeter(game.gestureProgress, canvas.width, canvas.height);
   }
 
-  // 5. Track Local Hands, Filter Jitter, Render Local Sword & Collect Network Pose
+  // 5. Track Local Fingers/Hands with Persistent Slot Matching & Independent Slash Trails
+  const rawCursors = extractFingerCursors(visionData.hands);
+  const usedSlots = new Set<number>();
   const currentLocalSwords: SwordPose[] = [];
 
-  visionData.hands.forEach((hand, idx) => {
-    const rawTip = hand[8];     // Index tip (fingernail)
-    const rawKnuckle = hand[5]; // Index MCP knuckle
+  for (const rc of rawCursors) {
+    // Find closest recently active slot so two fingers/hands never swap or cross-connect trails
+    let bestSlotIdx = -1;
+    let bestDist = 320;
 
-    const filter = filters[idx] || filters[0];
-    const smoothed = filter.filter(rawTip.x * canvas.width, rawTip.y * canvas.height, now);
+    for (let s = 0; s < cursorSlots.length; s++) {
+      if (usedSlots.has(s)) continue;
+      const slot = cursorSlots[s];
+      if (now - slot.lastSeenTime < 220) {
+        const dist = Math.hypot(rc.tipX - slot.lastX, rc.tipY - slot.lastY);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestSlotIdx = s;
+        }
+      }
+    }
 
-    const knuckleX = rawKnuckle.x * canvas.width;
-    const knuckleY = rawKnuckle.y * canvas.height;
+    // If no recently active slot matched, pick an available slot and reset its filter/trail
+    if (bestSlotIdx === -1) {
+      for (let s = 0; s < cursorSlots.length; s++) {
+        if (!usedSlots.has(s) && now - cursorSlots[s].lastSeenTime >= 220) {
+          bestSlotIdx = s;
+          break;
+        }
+      }
+      if (bestSlotIdx === -1) {
+        for (let s = 0; s < cursorSlots.length; s++) {
+          if (!usedSlots.has(s)) {
+            bestSlotIdx = s;
+            break;
+          }
+        }
+      }
+      if (bestSlotIdx !== -1) {
+        cursorSlots[bestSlotIdx].filter.reset();
+        game.slashTrails[bestSlotIdx] = [];
+      }
+    }
+
+    if (bestSlotIdx === -1) continue;
+    usedSlots.add(bestSlotIdx);
+
+    const slot = cursorSlots[bestSlotIdx];
+    const smoothed = slot.filter.filter(rc.tipX, rc.tipY, now);
+    slot.lastX = smoothed.x;
+    slot.lastY = smoothed.y;
+    slot.lastSeenTime = now;
 
     // Angle pointing from fingertip back toward knuckle
-    const swordAngle = Math.atan2(knuckleY - smoothed.y, knuckleX - smoothed.x) - Math.PI / 2;
+    const swordAngle = Math.atan2(rc.knuckleY - smoothed.y, rc.knuckleX - smoothed.x) - Math.PI / 2;
 
     currentLocalSwords.push({
       x: smoothed.x,
@@ -598,58 +806,74 @@ function loop(now: number): void {
       angle: swordAngle
     });
 
-    // Record trail for slicing intersections
-    game.slashTrail.push({ x: smoothed.x, y: smoothed.y, age: 1.0 });
+    const trail = game.slashTrails[bestSlotIdx];
+    trail.push({ x: smoothed.x, y: smoothed.y, age: 1.0 });
 
-    if (game.slashTrail.length >= 2 && game.state === 'PLAYING') {
-      const p1 = game.slashTrail[game.slashTrail.length - 2];
-      const p2 = game.slashTrail[game.slashTrail.length - 1];
+    if (trail.length >= 2 && game.state === 'PLAYING') {
+      const p1 = trail[trail.length - 2];
+      const p2 = trail[trail.length - 1];
       game.processSlash(p1, p2, updateHUD);
     }
-  });
+  }
 
-  // Decay local slash trail
-  for (let i = game.slashTrail.length - 1; i >= 0; i--) {
-    game.slashTrail[i].age -= 0.08 * (dt * 60);
-    if (game.slashTrail[i].age <= 0) game.slashTrail.splice(i, 1);
+  // Decay all local slash trails independently
+  for (const trail of game.slashTrails) {
+    for (let i = trail.length - 1; i >= 0; i--) {
+      trail[i].age -= 0.08 * (dt * 60);
+      if (trail[i].age <= 0) trail.splice(i, 1);
+    }
   }
 
   // 6. Multiplayer Network Sync & Fluid Remote Sword Rendering
   if (game.mode === 'MULTIPLAYER') {
-    multiplayer.sendSwordState(currentLocalSwords, now);
+    multiplayer.sendSwordState(currentLocalSwords, now, {
+      matchId: currentMatchId,
+      score: game.score,
+      lives: game.lives,
+      matchOver: game.state === 'GAMEOVER' ? lastMatchOverPayload : null,
+      rematchReady: game.state === 'GAMEOVER' ? localRematchReady : false
+    });
 
     const remoteSwords = multiplayer.updateRemoteInterpolation(dt, now);
-    renderer.renderSlashTrail(multiplayer.remoteSlashTrail, '#00E5FF');
+    for (const rTrail of multiplayer.remoteSlashTrails) {
+      renderer.renderSlashTrail(rTrail, '#00E5FF');
+    }
     for (const rs of remoteSwords) {
       renderer.renderSword(rs.x, rs.y, rs.angle, 'remote');
     }
 
-    // Periodic score/timer heartbeat from host
-    if (multiplayer.role === 'host' && game.state === 'PLAYING' && now - lastScoreSyncTime > 500) {
+    // Periodic score/timer/target heartbeat from host
+    if (multiplayer.role === 'host' && game.state === 'PLAYING' && now - lastScoreSyncTime > 300) {
       lastScoreSyncTime = now;
+      const activeTargets = game.targets.filter(t => !t.sliced);
       multiplayer.sendScoreSync({
         hostScore: game.score,
         hostLives: game.lives,
         guestScore: game.opponentScore,
         guestLives: game.opponentLives,
-        timeRemainingMs: Math.round(game.matchTimeRemaining * 1000)
+        timeRemainingMs: Math.round(game.matchTimeRemaining * 1000),
+        targets: activeTargets
       });
     }
-
-    updateVoiceUI();
   }
 
-  // 7. Render Local Slash Trail & Local Gold Swords
-  renderer.renderSlashTrail(game.slashTrail, '#FFC904');
+  // 7. Render Local Slash Trails & Local Gold Swords
+  for (const trail of game.slashTrails) {
+    renderer.renderSlashTrail(trail, '#FFC904');
+  }
   for (const ls of currentLocalSwords) {
     renderer.renderSword(ls.x, ls.y, ls.angle, 'local');
   }
 
   // 8. Game Physics, 3D Targets, Floating Score Popups & Particle Rendering
+  const prevDisplayedSec = Math.ceil(game.matchTimeRemaining);
   const canSpawn = game.mode === 'SINGLEPLAYER' || multiplayer.role === 'host';
   game.update(now, dt, canvas.width, canvas.height, canSpawn, updateHUD, handleMultiplayerTimeUp);
-  if (game.state === 'PLAYING') {
-    updateHUD();
+  if (game.mode === 'MULTIPLAYER' && game.state === 'PLAYING') {
+    const newDisplayedSec = Math.ceil(game.matchTimeRemaining);
+    if (newDisplayedSec !== prevDisplayedSec) {
+      updateHUD();
+    }
   }
 
   for (const item of game.targets) {

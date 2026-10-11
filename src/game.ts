@@ -1,9 +1,39 @@
 import soundFile from './audio/sword_slash.mp3';
+import poisonMushroomSoundFile from './audio/poison_mushroom.mp3';
+
+const AUDIO_POOL_SIZE = 4;
+const slashAudioPool: HTMLAudioElement[] = Array.from({ length: AUDIO_POOL_SIZE }, () => {
+  const a = new Audio(soundFile);
+  a.preload = 'auto';
+  a.volume = 0.65;
+  return a;
+});
+let slashAudioIdx = 0;
+
+const poisonMushroomAudioPool: HTMLAudioElement[] = Array.from({ length: AUDIO_POOL_SIZE }, () => {
+  const a = new Audio(poisonMushroomSoundFile);
+  a.preload = 'auto';
+  a.volume = 0.8;
+  return a;
+});
+let poisonMushroomAudioIdx = 0;
 
 function playSlashSound(): void {
   try {
-    const audio = new Audio(soundFile);
-    audio.volume = 0.65;
+    const audio = slashAudioPool[slashAudioIdx];
+    slashAudioIdx = (slashAudioIdx + 1) % AUDIO_POOL_SIZE;
+    audio.currentTime = 0;
+    audio.play().catch(() => {});
+  } catch {
+    // Ignore audio playback errors
+  }
+}
+
+function playPoisonMushroomSound(): void {
+  try {
+    const audio = poisonMushroomAudioPool[poisonMushroomAudioIdx];
+    poisonMushroomAudioIdx = (poisonMushroomAudioIdx + 1) % AUDIO_POOL_SIZE;
+    audio.currentTime = 0;
     audio.play().catch(() => {});
   } catch {
     // Ignore audio playback errors
@@ -60,12 +90,17 @@ export interface FloatingText {
   alpha: number;
 }
 
+const HIGH_SCORE_KEY = 'vegi_knights_high_score';
+
 export class GameEngine {
   public mode: 'SINGLEPLAYER' | 'MULTIPLAYER' = 'SINGLEPLAYER';
   public state: 'MENU' | 'CALIBRATION' | 'SEARCHING' | 'COUNTDOWN' | 'PLAYING' | 'GAMEOVER' = 'MENU';
 
   public score = 0;
   public lives = 3;
+  public highScore = 0;
+  public isNewHighScore = false;
+  private highScoreBannerShown = false;
 
   public opponentScore = 0;
   public opponentLives = 3;
@@ -77,7 +112,7 @@ export class GameEngine {
   public targets: Target[] = [];
   public particles: SlashParticle[] = [];
   public floatingTexts: FloatingText[] = [];
-  public slashTrail: { x: number; y: number; age: number }[] = [];
+  public slashTrails: { x: number; y: number; age: number }[][] = [[], [], [], []];
 
   // Hands-free gesture timer
   public gestureProgress = 0; // 0 to 1
@@ -89,14 +124,45 @@ export class GameEngine {
   public onTargetSpawned?: (target: Target) => void;
   public onTargetSlicedByLocal?: (target: Target, cutAngle: number, nearestX: number, nearestY: number) => void;
 
+  constructor() {
+    this.loadHighScore();
+  }
+
+  private loadHighScore(): void {
+    try {
+      const saved = localStorage.getItem(HIGH_SCORE_KEY);
+      if (saved !== null) {
+        const parsed = parseInt(saved, 10);
+        if (!Number.isNaN(parsed) && parsed > 0) {
+          this.highScore = parsed;
+        }
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  private saveHighScore(val: number): void {
+    try {
+      localStorage.setItem(HIGH_SCORE_KEY, String(val));
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
   public start(): void {
     this.score = 0;
     this.lives = 3;
+    this.isNewHighScore = false;
+    this.highScoreBannerShown = this.highScore === 0;
     this.opponentScore = 0;
     this.opponentLives = 3;
-    this.targets = [];
+    if (this.mode !== 'MULTIPLAYER') {
+      this.targets = [];
+    }
     this.particles = [];
     this.floatingTexts = [];
+    this.slashTrails = [[], [], [], []];
     this.state = 'PLAYING';
     const now = performance.now();
     this.lastSpawnTime = now;
@@ -109,6 +175,7 @@ export class GameEngine {
     this.targets = [];
     this.particles = [];
     this.floatingTexts = [];
+    this.slashTrails = [[], [], [], []];
     this.gestureProgress = 0;
   }
 
@@ -243,6 +310,28 @@ export class GameEngine {
     });
   }
 
+  public syncRemoteTargets(remoteTargets: Target[]): void {
+    for (const rt of remoteTargets) {
+      const existing = this.targets.find(t => t.id === rt.id);
+      if (!existing) {
+        if (!rt.sliced) {
+          this.targets.push({
+            ...rt,
+            sliced: false
+          });
+        }
+      } else if (!existing.sliced && !rt.sliced) {
+        const drift = Math.hypot(existing.x - rt.x, existing.y - rt.y);
+        if (drift > 45) {
+          existing.x = existing.x * 0.5 + rt.x * 0.5;
+          existing.y = existing.y * 0.5 + rt.y * 0.5;
+          existing.vx = rt.vx;
+          existing.vy = rt.vy;
+        }
+      }
+    }
+  }
+
   public processSlash(
     p1: { x: number; y: number },
     p2: { x: number; y: number },
@@ -286,6 +375,23 @@ export class GameEngine {
             color: '#FFC904',
             alpha: 1.0
           });
+
+          if (this.mode === 'SINGLEPLAYER' && this.score > this.highScore) {
+            this.highScore = this.score;
+            this.isNewHighScore = true;
+            this.saveHighScore(this.highScore);
+            if (!this.highScoreBannerShown) {
+              this.highScoreBannerShown = true;
+              this.floatingTexts.push({
+                x: item.x,
+                y: item.y - 42,
+                vy: -2.6,
+                text: 'NEW HIGH SCORE!',
+                color: '#FFE57F',
+                alpha: 1.0
+              });
+            }
+          }
         }
 
         if (this.mode === 'MULTIPLAYER' && this.onTargetSlicedByLocal) {
@@ -302,33 +408,57 @@ export class GameEngine {
     cutAngle: number,
     nearestX: number,
     nearestY: number,
-    onStateChanged: () => void
+    onStateChanged: () => void,
+    isBombHint?: boolean,
+    pointsHint?: number,
+    slicerScore?: number,
+    slicerLives?: number
   ): void {
     const item = this.targets.find(t => t.id === targetId);
-    if (!item) return;
 
-    // Even if locally already sliced in a race condition, avoid double-splitting
-    if (!item.sliced) {
+    if (item && !item.sliced) {
       this.sliceTargetItem(item, cutAngle, nearestX, nearestY, 'remote');
+    } else if (!item) {
+      if (isBombHint) {
+        playPoisonMushroomSound();
+      } else {
+        playSlashSound();
+      }
+      this.emitSlashSparks(nearestX, nearestY, cutAngle, Boolean(isBombHint), 'remote');
     }
 
-    if (item.isBomb) {
+    const isBomb = item ? item.isBomb : Boolean(isBombHint);
+    const points = item ? item.points : (pointsHint ?? 15);
+    const fxX = item ? item.x : nearestX;
+    const fxY = item ? item.y : nearestY;
+
+    if (typeof slicerScore === 'number') {
+      this.opponentScore = slicerScore;
+    } else if (!isBomb) {
+      this.opponentScore += points;
+    }
+
+    if (typeof slicerLives === 'number') {
+      this.opponentLives = slicerLives;
+    } else if (isBomb) {
       this.opponentLives = Math.max(0, this.opponentLives - 1);
+    }
+
+    if (isBomb) {
       this.floatingTexts.push({
-        x: item.x,
-        y: item.y - 10,
+        x: fxX,
+        y: fxY - 10,
         vy: -2.2,
         text: 'FOE HIT BOMB!',
         color: '#00E5FF',
         alpha: 1.0
       });
     } else {
-      this.opponentScore += item.points;
       this.floatingTexts.push({
-        x: item.x,
-        y: item.y - 10,
+        x: fxX,
+        y: fxY - 10,
         vy: -2.2,
-        text: `+${item.points} FOE`,
+        text: `+${points} FOE`,
         color: '#00E5FF',
         alpha: 1.0
       });
@@ -346,7 +476,11 @@ export class GameEngine {
   ): void {
     item.sliced = true;
     item.slicedBy = slicedBy;
-    playSlashSound();
+    if (item.isBomb) {
+      playPoisonMushroomSound();
+    } else {
+      playSlashSound();
+    }
 
     // Emit slash particles
     this.emitSlashSparks(nearestX, nearestY, cutAngle, item.isBomb, slicedBy);
