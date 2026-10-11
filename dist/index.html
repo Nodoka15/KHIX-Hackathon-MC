@@ -4,8 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Vegi Knights</title>
-  <script type="module" crossorigin src="/assets/index-CbEMXYoO.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-DjvsiMON.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <script type="module" crossorigin src="/assets/index-CsV_iLM7.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-DeuZi7qI.css">
 </head>
 <body>
   <div id="game-container">
@@ -23,10 +26,22 @@
           </div>
           <div class="hud-row">
             <div id="score-display">SCORE: 0</div>
-            <div class="lives-box">
-              <div class="heart" id="hp-1"></div>
-              <div class="heart" id="hp-2"></div>
-              <div class="heart" id="hp-3"></div>
+            <div class="lives-box" aria-label="Player Lives">
+              <div class="heart" id="hp-1">
+                <svg viewBox="0 0 24 24" class="heart-emblem">
+                  <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+                </svg>
+              </div>
+              <div class="heart" id="hp-2">
+                <svg viewBox="0 0 24 24" class="heart-emblem">
+                  <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+                </svg>
+              </div>
+              <div class="heart" id="hp-3">
+                <svg viewBox="0 0 24 24" class="heart-emblem">
+                  <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+                </svg>
+              </div>
             </div>
           </div>
         </div>
@@ -42,13 +57,27 @@
 
         <!-- Opponent Player Stats (Multiplayer) -->
         <div id="opponent-hud" class="player-hud rival-hud" style="display: none;">
-          <div class="hud-tag rival-tag">RIVAL KNIGHT</div>
+          <div class="hud-top-meta rival-meta">
+            <div class="hud-tag rival-tag">RIVAL KNIGHT</div>
+          </div>
           <div class="hud-row">
             <div id="opponent-score-display">FOE: 0</div>
-            <div class="lives-box">
-              <div class="heart rival-heart" id="opp-hp-1"></div>
-              <div class="heart rival-heart" id="opp-hp-2"></div>
-              <div class="heart rival-heart" id="opp-hp-3"></div>
+            <div class="lives-box" aria-label="Rival Lives">
+              <div class="heart rival-heart" id="opp-hp-1">
+                <svg viewBox="0 0 24 24" class="heart-emblem">
+                  <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+                </svg>
+              </div>
+              <div class="heart rival-heart" id="opp-hp-2">
+                <svg viewBox="0 0 24 24" class="heart-emblem">
+                  <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+                </svg>
+              </div>
+              <div class="heart rival-heart" id="opp-hp-3">
+                <svg viewBox="0 0 24 24" class="heart-emblem">
+                  <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+                </svg>
+              </div>
             </div>
           </div>
         </div>
@@ -60,14 +89,14 @@
       <!-- Center Modal (Menu / Calibration / Matchmaking / Game Over) -->
       <div id="modal-screen" class="hud-modal">
         <div id="modal-badge" class="modal-badge">UCF KNIGHTRO ARENA</div>
-        <h1 id="modal-title">INITIALIZING SYSTEM</h1>
+        <h1 id="modal-title">VEGI KNIGHTS</h1>
         <p id="modal-desc">
-          Loading MediaPipe AI hand tracking models...
+          Select your battle mode below. Wield your finger-tracked sword in Solo Arcade or jump into live 1v1 Multiplayer!
         </p>
 
         <!-- Main Menu Mode Selection -->
         <div id="menu-options" class="menu-options" style="display: none;">
-          <button id="singleplayer-btn" class="mode-card-btn">
+          <button id="singleplayer-btn" class="mode-card-btn sp-card-btn">
             <span class="mode-title">SINGLEPLAYER</span>
             <span id="sp-mode-sub" class="mode-sub">Solo Arcade • 3 Lives • Best: 0</span>
           </button>

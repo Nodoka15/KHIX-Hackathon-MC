@@ -1,4 +1,5 @@
 import soundFile from './audio/sword_slash.mp3';
+import poisonMushroomSoundFile from './audio/poison_mushroom.mp3';
 
 const AUDIO_POOL_SIZE = 4;
 const slashAudioPool: HTMLAudioElement[] = Array.from({ length: AUDIO_POOL_SIZE }, () => {
@@ -9,10 +10,29 @@ const slashAudioPool: HTMLAudioElement[] = Array.from({ length: AUDIO_POOL_SIZE 
 });
 let slashAudioIdx = 0;
 
+const poisonMushroomAudioPool: HTMLAudioElement[] = Array.from({ length: AUDIO_POOL_SIZE }, () => {
+  const a = new Audio(poisonMushroomSoundFile);
+  a.preload = 'auto';
+  a.volume = 0.8;
+  return a;
+});
+let poisonMushroomAudioIdx = 0;
+
 function playSlashSound(): void {
   try {
     const audio = slashAudioPool[slashAudioIdx];
     slashAudioIdx = (slashAudioIdx + 1) % AUDIO_POOL_SIZE;
+    audio.currentTime = 0;
+    audio.play().catch(() => {});
+  } catch {
+    // Ignore audio playback errors
+  }
+}
+
+function playPoisonMushroomSound(): void {
+  try {
+    const audio = poisonMushroomAudioPool[poisonMushroomAudioIdx];
+    poisonMushroomAudioIdx = (poisonMushroomAudioIdx + 1) % AUDIO_POOL_SIZE;
     audio.currentTime = 0;
     audio.play().catch(() => {});
   } catch {
@@ -399,7 +419,11 @@ export class GameEngine {
     if (item && !item.sliced) {
       this.sliceTargetItem(item, cutAngle, nearestX, nearestY, 'remote');
     } else if (!item) {
-      playSlashSound();
+      if (isBombHint) {
+        playPoisonMushroomSound();
+      } else {
+        playSlashSound();
+      }
       this.emitSlashSparks(nearestX, nearestY, cutAngle, Boolean(isBombHint), 'remote');
     }
 
@@ -452,7 +476,11 @@ export class GameEngine {
   ): void {
     item.sliced = true;
     item.slicedBy = slicedBy;
-    playSlashSound();
+    if (item.isBomb) {
+      playPoisonMushroomSound();
+    } else {
+      playSlashSound();
+    }
 
     // Emit slash particles
     this.emitSlashSparks(nearestX, nearestY, cutAngle, item.isBomb, slicedBy);
