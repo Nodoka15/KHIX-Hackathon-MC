@@ -14,6 +14,6 @@ Multiplayer will allow you to connect to another player and play the game with t
 
 **To Run**
 
-Clone the GitHub Repository then run the `npm run dev` from the terminal at the the project directory root. Open up `localhost:3000` to get started! For multiplayer, the other player will do the same.
+You will need [NodeJS](https://nodejs.org/en) to be able to run this game. Clone the GitHub Repository then run `npm install` to download all necessary dependencies. After that, run the `npm run dev` from the terminal at the the project directory root. Open up `localhost:3000` (or the port that was used, check your terminal) to get started! For multiplayer, the other player will do the same.
 
 Created in partnership with [@bunnithan](github.com), [@ldanh20073-commits](github.com), and [@ThienN777](github.com).
